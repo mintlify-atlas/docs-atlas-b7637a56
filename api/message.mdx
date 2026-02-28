@@ -1,0 +1,306 @@
+---
+title: Message
+description: Learn how to create and work with messages in Maia for network communication.
+---
+
+The `Message` class represents a message that can be sent between clients and servers in Maia. Messages consist of an identifier and a dictionary of key-value pairs.
+
+## Constructor
+
+### Message(string id)
+
+Creates a new message with the specified identifier.
+
+<ParamField path="id" type="string" required>
+  A unique identifier for the message type. Use a descriptive name like `"player:move"` or `"game:update"`.
+</ParamField>
+
+```csharp
+var message = new Message("player:position");
+```
+
+## Properties
+
+### id
+
+<ResponseField name="id" type="string" required>
+  The message identifier. This is a readonly field set during construction.
+</ResponseField>
+
+```csharp
+var message = new Message("chat:message");
+Console.WriteLine(message.id); // Output: chat:message
+```
+
+## Indexer
+
+### this[string key]
+
+Gets or sets a value in the message's data dictionary.
+
+<ParamField path="key" type="string" required>
+  The key to get or set.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  The value associated with the key.
+</ResponseField>
+
+```csharp
+var message = new Message("player:move")
+{
+    ["x"] = "100",
+    ["y"] = "200",
+    ["speed"] = "5.5"
+};
+
+Console.WriteLine(message["x"]); // Output: 100
+
+// Update a value
+message["x"] = "150";
+```
+
+<Note>
+  All message values are stored as strings. You'll need to parse numeric or other types when retrieving values.
+</Note>
+
+## Methods
+
+### GetValues()
+
+Returns the entire dictionary of key-value pairs stored in the message.
+
+<ResponseField name="returns" type="Dictionary<string, string>">
+  A dictionary containing all key-value pairs in the message.
+</ResponseField>
+
+```csharp
+var message = new Message("player:stats")
+{
+    ["health"] = "100",
+    ["mana"] = "50"
+};
+
+var values = message.GetValues();
+foreach (var kvp in values)
+{
+    Console.WriteLine($"{kvp.Key}: {kvp.Value}");
+}
+```
+
+### SetValues()
+
+Replaces the message's entire dictionary with a new set of key-value pairs.
+
+<ParamField path="newValues" type="Dictionary<string, string>" required>
+  The new dictionary to set as the message's values.
+</ParamField>
+
+```csharp
+var message = new Message("game:state");
+
+var gameState = new Dictionary<string, string>
+{
+    ["level"] = "5",
+    ["score"] = "1000",
+    ["lives"] = "3"
+};
+
+message.SetValues(gameState);
+```
+
+### Serialize()
+
+Serializes the message to a byte array for network transmission.
+
+<ResponseField name="returns" type="byte[]">
+  A UTF-8 encoded JSON byte array representing the message.
+</ResponseField>
+
+```csharp
+var message = new Message("chat:message")
+{
+    ["user"] = "Alice",
+    ["text"] = "Hello, world!"
+};
+
+byte[] data = message.Serialize();
+```
+
+<Note>
+  You typically don't need to call `Serialize()` directly. The `Client.Send()` and `Server.SendToClient()` methods handle serialization automatically.
+</Note>
+
+### Serialize() (static)
+
+Static method that serializes a message to a byte array.
+
+<ParamField path="message" type="Message" required>
+  The message to serialize.
+</ParamField>
+
+<ResponseField name="returns" type="byte[]">
+  A UTF-8 encoded JSON byte array representing the message.
+</ResponseField>
+
+```csharp
+var message = new Message("server:info");
+byte[] data = Message.Serialize(message);
+```
+
+### Deserialize() (static)
+
+Deserializes a byte array back into a Message object.
+
+<ParamField path="raw" type="byte[]" required>
+  The UTF-8 encoded JSON byte array to deserialize.
+</ParamField>
+
+<ResponseField name="returns" type="Message">
+  The deserialized message object.
+</ResponseField>
+
+```csharp
+byte[] data = /* received from network */;
+Message message = Message.Deserialize(data);
+
+Console.WriteLine($"Message ID: {message.id}");
+Console.WriteLine($"Values: {string.Join(", ", message.GetValues())}");
+```
+
+<Note>
+  You typically don't need to call `Deserialize()` directly. The client and server automatically deserialize incoming messages and pass them to your `OnMessage` callbacks.
+</Note>
+
+## Message format
+
+Messages are serialized as JSON with the following structure:
+
+```json
+{
+  "id": "message_identifier",
+  "values": {
+    "key1": "value1",
+    "key2": "value2"
+  }
+}
+```
+
+## Reserved keys
+
+Maia uses certain keys internally for its own functionality. Avoid using these keys in your messages:
+
+- `artimora:*` - All keys starting with `artimora:` are reserved for internal use
+- `artimora:error` - Error status for function calls
+- `artimora:function_name` - Function name in RPC calls
+- `artimora:function_return_id` - Return ID for function calls
+- `artimora:target_client` - Target client for server-to-client function calls
+
+## Reserved message IDs
+
+The following message IDs are reserved for internal use:
+
+- `artimora:identity_request` - Server requests client identity
+- `artimora:identity` - Client sends its identity
+- `artimora:function_call` - RPC function call
+- `artimora:function_results` - RPC function results
+
+## Examples
+
+### Simple chat message
+
+```csharp
+var chatMessage = new Message("chat:message")
+{
+    ["username"] = "Alice",
+    ["text"] = "Hello, everyone!",
+    ["timestamp"] = DateTime.UtcNow.ToString()
+};
+
+client.Send(chatMessage);
+```
+
+### Player position update
+
+```csharp
+var position = new Message("player:position")
+{
+    ["playerId"] = "12345",
+    ["x"] = player.X.ToString(),
+    ["y"] = player.Y.ToString(),
+    ["z"] = player.Z.ToString()
+};
+
+server.SendToAllClients(position);
+```
+
+### Game state synchronization
+
+```csharp
+var gameState = new Message("game:state");
+
+var stateData = new Dictionary<string, string>
+{
+    ["level"] = currentLevel.ToString(),
+    ["time_remaining"] = timeRemaining.ToString(),
+    ["players_alive"] = playersAlive.ToString()
+};
+
+gameState.SetValues(stateData);
+
+server.SendToAllClients(gameState);
+```
+
+### Handling received messages
+
+```csharp
+client.OnMessage += (message) =>
+{
+    switch (message.id)
+    {
+        case "player:move":
+            var x = float.Parse(message["x"]);
+            var y = float.Parse(message["y"]);
+            MovePlayer(x, y);
+            break;
+            
+        case "game:end":
+            var winner = message["winner"];
+            ShowGameOver(winner);
+            break;
+            
+        default:
+            Console.WriteLine($"Unknown message: {message.id}");
+            break;
+    }
+};
+```
+
+### Working with complex data
+
+```csharp
+// Storing JSON within a message value
+var playerData = new
+{
+    health = 100,
+    mana = 50,
+    level = 5
+};
+
+var message = new Message("player:update")
+{
+    ["playerId"] = "12345",
+    ["data"] = JsonSerializer.Serialize(playerData)
+};
+
+// Receiving and parsing
+client.OnMessage += (msg) =>
+{
+    if (msg.id == "player:update")
+    {
+        var playerId = msg["playerId"];
+        var data = JsonSerializer.Deserialize<PlayerData>(msg["data"]);
+        UpdatePlayer(playerId, data);
+    }
+};
+```

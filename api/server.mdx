@@ -1,0 +1,378 @@
+---
+title: Server
+description: Learn how to create and manage Maia server instances for accepting client connections.
+---
+
+The `Server<TLayer>` class provides the server-side implementation for accepting client connections, broadcasting messages, and managing connected clients.
+
+## Constructor
+
+### Server()
+
+Creates a new server instance with default initialization options.
+
+```csharp
+var server = new Server<TCPNetworkingLayer>();
+```
+
+### Server(ServerInitializationOptions options)
+
+Creates a new server instance with custom initialization options.
+
+<ParamField path="options" type="ServerInitializationOptions" required>
+  Configuration options for the server, including port and tick delay.
+</ParamField>
+
+```csharp
+var options = new ServerInitializationOptions
+{
+    Port = 8080,
+    TickDelay = 100,
+    FunctionTimeout = 8000
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+## Properties
+
+### OnMessage
+
+<ResponseField name="OnMessage" type="Action<(int client, Message message)>">
+  Callback invoked when the server receives a message from a client. The tuple contains the client ID and the message.
+</ResponseField>
+
+```csharp
+server.OnMessage += ((int client, Message message) data) =>
+{
+    Console.WriteLine($"Client {data.client} sent: {data.message.id}");
+};
+```
+
+### OnClientConnect
+
+<ResponseField name="OnClientConnect" type="Action<int>">
+  Callback invoked when a client connects to the server. Receives the client ID.
+</ResponseField>
+
+```csharp
+server.OnClientConnect += (clientId) =>
+{
+    Console.WriteLine($"Client {clientId} connected");
+};
+```
+
+### OnClientDisconnect
+
+<ResponseField name="OnClientDisconnect" type="Action<int>">
+  Callback invoked when a client disconnects from the server. Receives the client ID.
+</ResponseField>
+
+```csharp
+server.OnClientDisconnect += (clientId) =>
+{
+    Console.WriteLine($"Client {clientId} disconnected");
+};
+```
+
+## Methods
+
+### SendToClient()
+
+Sends a message to a specific connected client.
+
+<ParamField path="id" type="int" required>
+  The ID of the target client.
+</ParamField>
+
+<ParamField path="message" type="Message" required>
+  The message to send.
+</ParamField>
+
+```csharp
+var message = new Message("server:notification")
+{
+    ["text"] = "Welcome to the server!"
+};
+
+server.SendToClient(clientId, message);
+```
+
+### SendToAllClients()
+
+Broadcasts a message to all connected clients.
+
+<ParamField path="message" type="Message" required>
+  The message to broadcast to all clients.
+</ParamField>
+
+```csharp
+var announcement = new Message("server:announcement")
+{
+    ["text"] = "Server restart in 5 minutes"
+};
+
+server.SendToAllClients(announcement);
+```
+
+### GetClients()
+
+Returns an array of all currently connected client IDs.
+
+<ResponseField name="returns" type="int[]">
+  An array of client IDs, sorted in ascending order.
+</ResponseField>
+
+```csharp
+int[] clients = server.GetClients();
+Console.WriteLine($"Connected clients: {string.Join(", ", clients)}");
+```
+
+### GetClientIdentities()
+
+Returns an array of client GUIDs for all connected clients.
+
+<ResponseField name="returns" type="Guid?[]">
+  An array of client identities. A `null` value indicates the client's identity hasn't been received yet.
+</ResponseField>
+
+<Note>
+  Client identities are automatically requested when a client connects. There may be a brief delay before the identity is available.
+</Note>
+
+```csharp
+Guid?[] identities = server.GetClientIdentities();
+for (int i = 0; i < identities.Length; i++)
+{
+    Console.WriteLine($"Client {i}: {identities[i]}");
+}
+```
+
+### GetClientIdentity()
+
+Retrieves the GUID identity for a specific client.
+
+<ParamField path="clientId" type="int" required>
+  The client ID to look up.
+</ParamField>
+
+<ResponseField name="returns" type="Guid?">
+  The client's unique identity, or `null` if not yet received.
+</ResponseField>
+
+```csharp
+Guid? identity = server.GetClientIdentity(clientId);
+if (identity.HasValue)
+{
+    Console.WriteLine($"Client identity: {identity.Value}");
+}
+else
+{
+    Console.WriteLine("Identity not yet available");
+}
+```
+
+### GetClientId()
+
+Finds the client ID for a given client identity GUID.
+
+<ParamField path="clientIdentity" type="Guid" required>
+  The client identity to search for.
+</ParamField>
+
+<ResponseField name="returns" type="int">
+  The client ID, or `-1` if not found.
+</ResponseField>
+
+```csharp
+Guid clientGuid = Guid.Parse("12345678-1234-1234-1234-123456789abc");
+int clientId = server.GetClientId(clientGuid);
+
+if (clientId >= 0)
+{
+    Console.WriteLine($"Found client: {clientId}");
+}
+```
+
+### Listen()
+
+Starts the server's main message processing loop. This method runs asynchronously until `Shutdown()` is called.
+
+<ResponseField name="returns" type="Task">
+  A task that completes when the server stops listening.
+</ResponseField>
+
+```csharp
+// Start listening in the background
+var listenTask = server.Listen();
+
+// When done, shut down the server
+server.Shutdown();
+
+// Wait for the listen task to complete
+await listenTask;
+```
+
+### CallFunction()
+
+Calls a function on a specific connected client and waits for the result.
+
+#### CallFunction(string functionName, int targetClient)
+
+<ParamField path="functionName" type="string" required>
+  The name of the function to invoke on the client.
+</ParamField>
+
+<ParamField path="targetClient" type="int" required>
+  The ID of the target client.
+</ParamField>
+
+<ResponseField name="returns" type="Task<Dictionary<string, string>>">
+  A dictionary containing the function's return values and an `artimora:error` status entry.
+</ResponseField>
+
+```csharp
+var result = await server.CallFunction("GetPlayerStats", clientId);
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Player health: {result["health"]}");
+}
+```
+
+#### CallFunction with arguments
+
+<ParamField path="functionName" type="string" required>
+  The name of the function to invoke on the client.
+</ParamField>
+
+<ParamField path="targetClient" type="int" required>
+  The ID of the target client.
+</ParamField>
+
+<ParamField path="args" type="Dictionary<string, string>" required>
+  Arguments to pass to the client function.
+</ParamField>
+
+<ResponseField name="returns" type="Task<Dictionary<string, string>>">
+  A dictionary containing the function's return values and an `artimora:error` status entry.
+</ResponseField>
+
+<Note>
+  If `artimora:error` is anything other than `none`, function result entries may be missing. Common error values include:
+  - `none` - No error, function executed successfully
+  - `timeout` - Function call timed out
+  - `not_found` - Function not found on client
+  - `handler_error` - Function threw an exception
+</Note>
+
+```csharp
+var args = new Dictionary<string, string>
+{
+    ["amount"] = "50"
+};
+
+var result = await server.CallFunction("DealDamage", clientId, args);
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Damage applied: {result["success"]}");
+}
+```
+
+### RegisterFunction()
+
+Registers a server-side function that can be invoked remotely by connected clients.
+
+<ParamField path="functionName" type="string" required>
+  The function identifier exposed to clients.
+</ParamField>
+
+<ParamField path="func" type="Func<Dictionary<string, string>, Dictionary<string, string>>" required>
+  The function implementation. Receives arguments as a dictionary and returns results as a dictionary.
+</ParamField>
+
+<ParamField path="forceSet" type="bool" default="false">
+  If `true`, replaces an existing function with the same name.
+</ParamField>
+
+```csharp
+server.RegisterFunction("GetServerTime", (args) =>
+{
+    return new Dictionary<string, string>
+    {
+        ["time"] = DateTime.UtcNow.ToString()
+    };
+});
+```
+
+### Shutdown()
+
+Signals the server to stop listening and disconnect all clients.
+
+```csharp
+server.Shutdown();
+```
+
+## Complete example
+
+```csharp
+using Artimora.Maia;
+
+// Create server with custom options
+var options = new ServerInitializationOptions
+{
+    Port = 8080,
+    TickDelay = 100
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+
+// Set up event handlers
+server.OnClientConnect += (clientId) =>
+{
+    Console.WriteLine($"Client {clientId} connected");
+    
+    // Send welcome message
+    var welcome = new Message("server:welcome")
+    {
+        ["message"] = "Welcome to the server!"
+    };
+    server.SendToClient(clientId, welcome);
+};
+
+server.OnMessage += ((int client, Message message) data) =>
+{
+    Console.WriteLine($"Client {data.client}: {data.message.id}");
+};
+
+server.OnClientDisconnect += (clientId) =>
+{
+    Console.WriteLine($"Client {clientId} disconnected");
+};
+
+// Register server-side functions
+server.RegisterFunction("GetServerStatus", (args) =>
+{
+    var clients = server.GetClients();
+    return new Dictionary<string, string>
+    {
+        ["status"] = "running",
+        ["clients"] = clients.Length.ToString()
+    };
+});
+
+// Start listening
+var listenTask = server.Listen();
+
+// Broadcast periodic announcements
+var announcement = new Message("server:announcement")
+{
+    ["text"] = "Server is running smoothly"
+};
+server.SendToAllClients(announcement);
+
+// When done, shutdown
+server.Shutdown();
+await listenTask;
+```

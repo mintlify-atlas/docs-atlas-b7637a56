@@ -1,0 +1,302 @@
+---
+title: Client
+description: Learn how to create and manage Maia client instances for connecting to servers.
+---
+
+The `Client<TLayer>` class provides the client-side implementation for connecting to a Maia server, sending messages, and invoking remote functions.
+
+## Constructor
+
+### Client()
+
+Creates a new client instance with default initialization options.
+
+```csharp
+var client = new Client<TCPNetworkingLayer>();
+```
+
+### Client(ClientInitializationOptions options)
+
+Creates a new client instance with custom initialization options.
+
+<ParamField path="options" type="ClientInitializationOptions" required>
+  Configuration options for the client, including host, port, and reconnection behavior.
+</ParamField>
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    Host = "127.0.0.1",
+    Port = 8080,
+    TickDelay = 100,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 2000,
+        MaxAttempts = 10
+    }
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+```
+
+## Properties
+
+### OnMessage
+
+<ResponseField name="OnMessage" type="Action<Message>">
+  Callback invoked when the client receives a message from the server.
+</ResponseField>
+
+```csharp
+client.OnMessage += (message) =>
+{
+    Console.WriteLine($"Received message: {message.id}");
+};
+```
+
+### OnConnection
+
+<ResponseField name="OnConnection" type="Action">
+  Callback invoked when the client successfully connects to the server.
+</ResponseField>
+
+```csharp
+client.OnConnection += () =>
+{
+    Console.WriteLine("Connected to server");
+};
+```
+
+### OnDisconnect
+
+<ResponseField name="OnDisconnect" type="Action">
+  Callback invoked when the client disconnects from the server.
+</ResponseField>
+
+```csharp
+client.OnDisconnect += () =>
+{
+    Console.WriteLine("Disconnected from server");
+};
+```
+
+## Methods
+
+### Send()
+
+Sends a message to the connected server.
+
+<ParamField path="message" type="Message" required>
+  The message to send to the server.
+</ParamField>
+
+```csharp
+var message = new Message("game:player_move")
+{
+    ["x"] = "10",
+    ["y"] = "20"
+};
+
+client.Send(message);
+```
+
+### Listen()
+
+Starts the client's main message processing loop. This method runs asynchronously until `Shutdown()` is called.
+
+<ResponseField name="returns" type="Task">
+  A task that completes when the client stops listening.
+</ResponseField>
+
+```csharp
+// Start listening in the background
+var listenTask = client.Listen();
+
+// When done, shut down the client
+client.Shutdown();
+
+// Wait for the listen task to complete
+await listenTask;
+```
+
+### CallFunction()
+
+Calls a function on the connected server and waits for the result.
+
+#### CallFunction(string functionName)
+
+<ParamField path="functionName" type="string" required>
+  The name of the function to invoke on the server.
+</ParamField>
+
+<ResponseField name="returns" type="Task<Dictionary<string, string>>">
+  A dictionary containing the function's return values and an `artimora:error` status entry.
+</ResponseField>
+
+```csharp
+var result = await client.CallFunction("GetServerStatus");
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Server status: {result["status"]}");
+}
+```
+
+#### CallFunction with arguments
+
+<ParamField path="functionName" type="string" required>
+  The name of the function to invoke on the server.
+</ParamField>
+
+<ParamField path="args" type="Dictionary<string, string>" required>
+  Arguments to pass to the server function.
+</ParamField>
+
+<ResponseField name="returns" type="Task<Dictionary<string, string>>">
+  A dictionary containing the function's return values and an `artimora:error` status entry.
+</ResponseField>
+
+<Note>
+  If `artimora:error` is anything other than `none`, function result entries may be missing. Common error values include:
+  - `none` - No error, function executed successfully
+  - `timeout` - Function call timed out
+  - `disconnected` - Client is disconnected
+  - `not_found` - Function not found on server
+  - `handler_error` - Function threw an exception
+</Note>
+
+```csharp
+var args = new Dictionary<string, string>
+{
+    ["playerId"] = "12345",
+    ["itemId"] = "sword_01"
+};
+
+var result = await client.CallFunction("PurchaseItem", args);
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Purchase successful: {result["success"]}");
+}
+else
+{
+    Console.WriteLine($"Purchase failed: {result["artimora:error"]}");
+}
+```
+
+### RegisterFunction()
+
+Registers a client-side function that can be invoked remotely by the server.
+
+<ParamField path="functionName" type="string" required>
+  The function identifier exposed to the server.
+</ParamField>
+
+<ParamField path="func" type="Func<Dictionary<string, string>, Dictionary<string, string>>" required>
+  The function implementation. Receives arguments as a dictionary and returns results as a dictionary.
+</ParamField>
+
+<ParamField path="forceSet" type="bool" default="false">
+  If `true`, replaces an existing function with the same name.
+</ParamField>
+
+```csharp
+client.RegisterFunction("UpdatePlayerPosition", (args) =>
+{
+    var x = args["x"];
+    var y = args["y"];
+    
+    // Update player position in your game
+    UpdatePosition(x, y);
+    
+    return new Dictionary<string, string>
+    {
+        ["success"] = "true"
+    };
+});
+```
+
+### Shutdown()
+
+Signals the client to stop listening and disconnect from the server.
+
+```csharp
+client.Shutdown();
+```
+
+### ShouldRun()
+
+Returns whether the client is currently running.
+
+<ResponseField name="returns" type="bool">
+  `true` if the client should continue running, `false` if shutdown has been requested.
+</ResponseField>
+
+```csharp
+if (client.ShouldRun())
+{
+    Console.WriteLine("Client is running");
+}
+```
+
+## Complete example
+
+```csharp
+using Artimora.Maia;
+
+// Create client with custom options
+var options = new ClientInitializationOptions
+{
+    Host = "127.0.0.1",
+    Port = 8080,
+    TickDelay = 100
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+
+// Set up event handlers
+client.OnConnection += () =>
+{
+    Console.WriteLine("Connected to server!");
+};
+
+client.OnMessage += (message) =>
+{
+    Console.WriteLine($"Received: {message.id}");
+};
+
+client.OnDisconnect += () =>
+{
+    Console.WriteLine("Disconnected from server");
+};
+
+// Register a client-side function
+client.RegisterFunction("Ping", (args) =>
+{
+    return new Dictionary<string, string>
+    {
+        ["response"] = "pong"
+    };
+});
+
+// Start listening
+var listenTask = client.Listen();
+
+// Send a message
+var message = new Message("hello")
+{
+    ["greeting"] = "Hello, server!"
+};
+client.Send(message);
+
+// Call a server function
+var result = await client.CallFunction("GetServerTime");
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Server time: {result["time"]}");
+}
+
+// When done, shutdown
+client.Shutdown();
+await listenTask;
+```

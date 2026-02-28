@@ -1,80 +1,357 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Build your first client-server application with Maia in minutes
 ---
 
-## Get started in three steps
+# Quickstart
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating a simple client-server application using Maia. You'll build a server that performs calculations and a client that requests them.
 
-### Step 1: Set up your local environment
+## Create a server
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Initialize the server">
+    Create a new server instance using the TCP network layer:
+
+    ```csharp
+    using Artimora.Maia;
+
+    var server = new Server<TCPNetworkingLayer>();
+    ```
+
+    <Tip>
+      You can pass `ServerInitializationOptions` to customize the port, tick delay, and other settings. If omitted, `ServerInitializationOptions.Default` is used (port 8080).
+    </Tip>
+  </Step>
+
+  <Step title="Register event handlers">
+    Set up handlers for client connections and messages:
+
+    ```csharp
+    server.OnClientConnect += (clientId) => 
+    {
+        Console.WriteLine($"Client {clientId} connected");
+    };
+
+    server.OnClientDisconnect += (clientId) => 
+    {
+        Console.WriteLine($"Client {clientId} disconnected");
+    };
+
+    server.OnMessage += (data) => 
+    {
+        Console.WriteLine($"Client {data.client} sent: {data.message.id}");
+    };
+    ```
+  </Step>
+
+  <Step title="Register a function">
+    Register a server-side function that clients can call remotely:
+
+    ```csharp
+    server.RegisterFunction("addition", (args) =>
+    {
+        var left = int.Parse(args["left"]);
+        var right = int.Parse(args["right"]);
+        var result = left + right;
+
+        return new Dictionary<string, string>
+        {
+            ["result"] = result.ToString()
+        };
+    });
+    ```
+
+    <Note>
+      Function arguments and return values are dictionaries with string keys and string values. You're responsible for parsing and serializing your data types.
+    </Note>
+  </Step>
+
+  <Step title="Start listening">
+    Start the server's message loop:
+
+    ```csharp
+    await server.Listen();
+    ```
+
+    This method runs indefinitely until you call `server.Shutdown()`.
+  </Step>
+</Steps>
+
+## Create a client
+
+<Steps>
+  <Step title="Initialize the client">
+    Create a client instance with optional configuration:
+
+    ```csharp
+    using Artimora.Maia;
+
+    var options = ClientInitializationOptions.Default with 
+    {
+        Host = "127.0.0.1",
+        Port = 8080,
+        AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+        {
+            MaxAttempts = 10,
+            DelayMs = 2000
+        }
+    };
+
+    var client = new Client<TCPNetworkingLayer>(options);
+    ```
+  </Step>
+
+  <Step title="Register event handlers">
+    Handle connection events:
+
+    ```csharp
+    client.OnConnection += () => 
+    {
+        Console.WriteLine("Connected to server");
+    };
+
+    client.OnDisconnect += () => 
+    {
+        Console.WriteLine("Disconnected from server");
+    };
+
+    client.OnMessage += (message) => 
+    {
+        Console.WriteLine($"Received message: {message.id}");
+    };
+    ```
+  </Step>
+
+  <Step title="Start the client loop">
+    Run the client's message loop in the background:
+
+    ```csharp
+    var listenTask = Task.Run(async () => await client.Listen());
+    ```
+
+    <Tip>
+      Unlike the server, you typically want to run the client's `Listen()` method in a background task so you can continue executing code in your main thread.
+    </Tip>
+  </Step>
+
+  <Step title="Call remote functions">
+    Call the server's registered functions:
+
+    ```csharp
+    var result = await client.CallFunction("addition", new Dictionary<string, string>
+    {
+        ["left"] = "5",
+        ["right"] = "3"
+    });
+
+    if (result["artimora:error"] == "none")
+    {
+        Console.WriteLine($"Result: {result["result"]}");
+    }
+    else
+    {
+        Console.WriteLine($"Error: {result["artimora:error"]}");
+    }
+    ```
+
+    <Note>
+      All function call results include an `artimora:error` key. Check this value to ensure the call succeeded. Possible error values include `none`, `timeout`, `disconnected`, and `not_found`.
+    </Note>
+  </Step>
+</Steps>
+
+## Complete example
+
+Here's a complete working example combining both server and client:
+
+```csharp
+using Artimora.Maia;
+
+public class Program
+{
+    public static async Task Main(string[] args)
+    {
+        if (args[0] == "server")
+            await RunServer();
+        else
+            await RunClient();
+    }
+
+    private static async Task RunServer()
+    {
+        var server = new Server<TCPNetworkingLayer>();
+
+        server.OnClientConnect += (id) => 
+            Console.WriteLine($"Client {id} connected");
+
+        server.OnClientDisconnect += (id) => 
+            Console.WriteLine($"Client {id} disconnected");
+
+        server.RegisterFunction("addition", (args) =>
+        {
+            var left = int.Parse(args["left"]);
+            var right = int.Parse(args["right"]);
+            return new Dictionary<string, string>
+            {
+                ["result"] = (left + right).ToString()
+            };
+        });
+
+        Console.WriteLine("Server started on port 8080");
+        await server.Listen();
+    }
+
+    private static async Task RunClient()
+    {
+        var client = new Client<TCPNetworkingLayer>();
+
+        client.OnConnection += () => 
+            Console.WriteLine("Connected to server");
+
+        Task.Run(async () => await client.Listen());
+
+        // Wait for connection
+        await Task.Delay(1000);
+
+        while (client.ShouldRun())
+        {
+            var result = await client.CallFunction("addition", 
+                new Dictionary<string, string>
+                {
+                    ["left"] = "5",
+                    ["right"] = "3"
+                });
+
+            if (result["artimora:error"] == "none")
+                Console.WriteLine($"5 + 3 = {result["result"]}");
+            else
+                Console.WriteLine($"Error: {result["artimora:error"]}");
+
+            await Task.Delay(2000);
+        }
+    }
+}
+```
+
+## Run your application
+
+<Steps>
+  <Step title="Start the server">
+    Open a terminal and run:
+
+    ```bash
+    dotnet run server
+    ```
+  </Step>
+
+  <Step title="Start the client">
+    In a separate terminal, run:
+
+    ```bash
+    dotnet run client
+    ```
+  </Step>
+
+  <Step title="Observe the output">
+    You should see:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    **Server terminal:**
+    ```
+    Server started on port 8080
+    Client 1 connected
+    ```
 
-### Step 2: Deploy your changes
+    **Client terminal:**
+    ```
+    Connected to server
+    5 + 3 = 8
+    5 + 3 = 8
+    ...
+    ```
+  </Step>
+</Steps>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Sending messages
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+In addition to function calls, you can send raw messages:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+### Server to client
 
-### Step 3: Go live
+```csharp
+var message = new Message("welcome")
+{
+    ["text"] = "Hello, client!"
+};
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+server.SendToClient(clientId, message);
+```
+
+### Client to server
+
+```csharp
+var message = new Message("ping")
+{
+    ["timestamp"] = DateTime.UtcNow.ToString()
+};
+
+client.Send(message);
+```
+
+### Broadcast to all clients
+
+```csharp
+var message = new Message("announcement")
+{
+    ["text"] = "Server maintenance in 5 minutes"
+};
+
+server.SendToAllClients(message);
+```
+
+## Configuration options
+
+### Server options
+
+```csharp
+var options = new ServerInitializationOptions
+{
+    Port = 9000,              // Listen port (default: 8080)
+    TickDelay = 50,           // Loop delay in ms (default: 100)
+    FunctionTimeout = 10000   // Function call timeout in ms (default: 8000)
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+### Client options
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    Host = "192.168.1.100",   // Server host (default: 127.0.0.1)
+    Port = 9000,              // Server port (default: 8080)
+    TickDelay = 50,           // Loop delay in ms (default: 100)
+    FunctionTimeout = 10000,  // Function call timeout in ms (default: 8000)
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        MaxAttempts = 5,      // Max reconnect attempts (default: 10)
+        DelayMs = 1000        // Delay between attempts in ms (default: 2000)
+    }
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have a working client-server application, explore more advanced features:
 
-<CardGroup cols={2}>
+- **Bidirectional function calls**: Register functions on both client and server
+- **Client identification**: Use `GetClientIdentity()` to track clients across reconnections
+- **Custom network layers**: Implement the `NetworkLayer` abstract class for custom transports
+- **Error handling**: Handle timeouts, disconnections, and function errors gracefully
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+<Tip>
+  Check the source code examples in `/src/Artimora.Maia.Testing/Program.cs` for more advanced usage patterns.
+</Tip>

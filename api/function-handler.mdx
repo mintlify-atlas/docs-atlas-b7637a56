@@ -1,0 +1,437 @@
+---
+title: Function handler
+description: Learn about the IFunctionHandler interface and GenericFunctionHandler implementation for remote function calls.
+---
+
+Maia's function handler system enables RPC-like function calls over network messages. The `IFunctionHandler` interface defines the contract, and `GenericFunctionHandler` provides the default implementation.
+
+## IFunctionHandler interface
+
+Defines the contract for registering and invoking remote functions over Maia messages.
+
+```csharp
+public interface IFunctionHandler
+```
+
+### Methods
+
+#### SetOptions()
+
+Applies initialization options used by the handler runtime, including function timeout behavior.
+
+<ParamField path="newOptions" type="BaseInitializationOptions" required>
+  The options from the active client or server instance.
+</ParamField>
+
+```csharp
+public void SetOptions(BaseInitializationOptions newOptions);
+```
+
+#### OnMessage()
+
+Handles inbound function call and function result messages.
+
+<ParamField path="client" type="int" required>
+  The source client identifier for server-side handlers; ignored (-1) for client-side handlers.
+</ParamField>
+
+<ParamField path="message" type="Message" required>
+  The message to process. Typically has an `id` of `artimora:function_call` or `artimora:function_results`.
+</ParamField>
+
+```csharp
+public void OnMessage(int client, Message message);
+```
+
+#### RegisterMessageSender()
+
+Registers the transport callback used by the handler to emit function messages.
+
+<ParamField path="sender" type="Action<FunctionSenderData>" required>
+  Callback that delivers outbound function payloads.
+</ParamField>
+
+```csharp
+public void RegisterMessageSender(Action<FunctionSenderData> sender);
+```
+
+#### CallFunction()
+
+Calls a function on the opposite side of the connection and waits for its result.
+
+<ParamField path="functionName" type="string" required>
+  The function name to invoke.
+</ParamField>
+
+<ParamField path="args" type="Dictionary<string, string>" required>
+  Arguments sent to the function. Implementations may add reserved `artimora:*` metadata entries while dispatching the call.
+</ParamField>
+
+<ResponseField name="returns" type="Task<Dictionary<string, string>>">
+  A dictionary containing the returned values and an `artimora:error` status entry.
+</ResponseField>
+
+<Note>
+  If `artimora:error` is anything other than `none`, function result entries may be missing.
+</Note>
+
+```csharp
+public Task<Dictionary<string, string>> CallFunction(
+    string functionName,
+    Dictionary<string, string> args
+);
+```
+
+#### RegisterFunction()
+
+Registers a local function that can be invoked remotely.
+
+<ParamField path="functionName" type="string" required>
+  The function identifier exposed to remote callers.
+</ParamField>
+
+<ParamField path="func" type="Func<Dictionary<string, string>, Dictionary<string, string>>" required>
+  The function implementation.
+</ParamField>
+
+<ParamField path="forceSet" type="bool" default="false">
+  If `true`, replaces an existing function with the same name.
+</ParamField>
+
+```csharp
+public void RegisterFunction(
+    string functionName,
+    Func<Dictionary<string, string>, Dictionary<string, string>> func,
+    bool forceSet = false
+);
+```
+
+## GenericFunctionHandler class
+
+The default `IFunctionHandler` implementation that routes function calls over Maia messages and resolves asynchronous call results.
+
+```csharp
+public class GenericFunctionHandler(HandlerMetaData.Side side) : IFunctionHandler
+```
+
+### Constructor
+
+<ParamField path="side" type="HandlerMetaData.Side" required>
+  The local side this handler is attached to (Server or Client).
+</ParamField>
+
+```csharp
+var handler = new GenericFunctionHandler(HandlerMetaData.Side.Server);
+```
+
+### How it works
+
+1. **Function registration** - Functions are stored in a concurrent dictionary by name
+2. **Function calls** - Generate a unique GUID for each call and send a message with `id = "artimora:function_call"`
+3. **Result tracking** - Use `TaskCompletionSource` to track pending calls by GUID
+4. **Result handling** - When a result message arrives, match it to the pending call and complete the task
+5. **Timeout handling** - If no result arrives within `FunctionTimeout`, return a timeout error
+
+### Internal message format
+
+#### Function call message
+
+```csharp
+{
+    "id": "artimora:function_call",
+    "values": {
+        "artimora:function_name": "MyFunction",
+        "artimora:function_return_id": "guid-here",
+        "arg1": "value1",
+        "arg2": "value2"
+    }
+}
+```
+
+#### Function result message
+
+```csharp
+{
+    "id": "artimora:function_results",
+    "values": {
+        "artimora:function_name": "MyFunction",
+        "artimora:function_return_id": "guid-here",
+        "artimora:error": "none",
+        "result1": "value1",
+        "result2": "value2"
+    }
+}
+```
+
+### Error codes
+
+The `artimora:error` field in function results can have these values:
+
+<ResponseField name="none" type="string">
+  No error, function executed successfully.
+</ResponseField>
+
+<ResponseField name="timeout" type="string">
+  Function call timed out waiting for a response.
+</ResponseField>
+
+<ResponseField name="not_found" type="string">
+  Function not found on the remote side.
+</ResponseField>
+
+<ResponseField name="handler_error" type="string">
+  Function threw an exception during execution.
+</ResponseField>
+
+<ResponseField name="disconnected" type="string">
+  Client is currently disconnected (client-side only).
+</ResponseField>
+
+## FunctionSenderData struct
+
+Encapsulates a function-related message that should be dispatched to a specific side/client.
+
+```csharp
+public readonly record struct FunctionSenderData(
+    HandlerMetaData.Side TargetSide,
+    Message MessageContents,
+    int TargetClient
+)
+```
+
+### Properties
+
+<ResponseField name="TargetSide" type="HandlerMetaData.Side" required>
+  The side that should receive this function message (Server or Client).
+</ResponseField>
+
+<ResponseField name="MessageContents" type="Message" required>
+  The function message to send.
+</ResponseField>
+
+<ResponseField name="TargetClient" type="int" required>
+  The intended target client ID when routing to the client side. Ignored when sending to the server side.
+</ResponseField>
+
+## Usage examples
+
+### Basic function registration
+
+```csharp
+// Server-side
+server.RegisterFunction("GetUserInfo", (args) =>
+{
+    var userId = args["userId"];
+    var user = database.GetUser(userId);
+    
+    return new Dictionary<string, string>
+    {
+        ["username"] = user.Username,
+        ["email"] = user.Email,
+        ["level"] = user.Level.ToString()
+    };
+});
+
+// Client-side call
+var args = new Dictionary<string, string>
+{
+    ["userId"] = "12345"
+};
+
+var result = await client.CallFunction("GetUserInfo", args);
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Username: {result["username"]}");
+    Console.WriteLine($"Email: {result["email"]}");
+}
+```
+
+### Error handling
+
+```csharp
+server.RegisterFunction("DivideNumbers", (args) =>
+{
+    try
+    {
+        var a = int.Parse(args["a"]);
+        var b = int.Parse(args["b"]);
+        
+        if (b == 0)
+        {
+            return new Dictionary<string, string>
+            {
+                ["artimora:error"] = "division_by_zero"
+            };
+        }
+        
+        var result = a / b;
+        return new Dictionary<string, string>
+        {
+            ["result"] = result.ToString()
+        };
+    }
+    catch (Exception ex)
+    {
+        return new Dictionary<string, string>
+        {
+            ["artimora:error"] = "invalid_input",
+            ["message"] = ex.Message
+        };
+    }
+});
+```
+
+### Replacing functions
+
+```csharp
+// Register initial function
+server.RegisterFunction("GetVersion", (args) =>
+{
+    return new Dictionary<string, string>
+    {
+        ["version"] = "1.0.0"
+    };
+});
+
+// This will log an error - function already registered
+server.RegisterFunction("GetVersion", (args) =>
+{
+    return new Dictionary<string, string>
+    {
+        ["version"] = "2.0.0"
+    };
+});
+
+// This will replace the existing function
+server.RegisterFunction("GetVersion", (args) =>
+{
+    return new Dictionary<string, string>
+    {
+        ["version"] = "2.0.0"
+    };
+}, forceSet: true);
+```
+
+### Timeout handling
+
+```csharp
+// Server function that takes a long time
+server.RegisterFunction("SlowOperation", (args) =>
+{
+    Thread.Sleep(10000);  // 10 seconds
+    return new Dictionary<string, string>
+    {
+        ["done"] = "true"
+    };
+});
+
+// Client call with custom timeout
+var options = new ClientInitializationOptions
+{
+    FunctionTimeout = 15000  // 15 seconds
+};
+var client = new Client<TCPNetworkingLayer>(options);
+
+var result = await client.CallFunction("SlowOperation");
+
+if (result["artimora:error"] == "timeout")
+{
+    Console.WriteLine("Function call timed out");
+}
+```
+
+### Server-to-client function calls
+
+```csharp
+// Client registers a function
+client.RegisterFunction("ShowNotification", (args) =>
+{
+    var title = args["title"];
+    var message = args["message"];
+    
+    ShowNotificationUI(title, message);
+    
+    return new Dictionary<string, string>
+    {
+        ["acknowledged"] = "true"
+    };
+});
+
+// Server calls the client function
+var clientId = 1;
+var args = new Dictionary<string, string>
+{
+    ["title"] = "Server Message",
+    ["message"] = "Maintenance in 5 minutes"
+};
+
+var result = await server.CallFunction("ShowNotification", clientId, args);
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine("Notification delivered");
+}
+```
+
+## Creating a custom function handler
+
+You can implement `IFunctionHandler` to create custom function call behavior:
+
+```csharp
+public class CustomFunctionHandler : IFunctionHandler
+{
+    private BaseInitializationOptions options;
+    private Action<FunctionSenderData> messageSender;
+    private readonly Dictionary<string, Func<Dictionary<string, string>, Dictionary<string, string>>> functions = new();
+    
+    public void SetOptions(BaseInitializationOptions newOptions)
+    {
+        options = newOptions;
+    }
+    
+    public void OnMessage(int client, Message message)
+    {
+        // Handle incoming function messages
+        // Custom logic here
+    }
+    
+    public void RegisterMessageSender(Action<FunctionSenderData> sender)
+    {
+        messageSender = sender;
+    }
+    
+    public async Task<Dictionary<string, string>> CallFunction(
+        string functionName,
+        Dictionary<string, string> args)
+    {
+        // Custom function call logic
+        // Could implement caching, batching, etc.
+        return new Dictionary<string, string>();
+    }
+    
+    public void RegisterFunction(
+        string functionName,
+        Func<Dictionary<string, string>, Dictionary<string, string>> func,
+        bool forceSet = false)
+    {
+        // Custom registration logic
+        // Could add validation, middleware, etc.
+        if (forceSet || !functions.ContainsKey(functionName))
+        {
+            functions[functionName] = func;
+        }
+    }
+}
+
+// Use custom handler
+var options = new ServerInitializationOptions
+{
+    FunctionHandler = new CustomFunctionHandler()
+};
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+<Note>
+  Custom function handlers can implement features like middleware, caching, batching, or custom serialization formats.
+</Note>

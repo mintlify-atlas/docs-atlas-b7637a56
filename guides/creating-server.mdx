@@ -1,0 +1,234 @@
+---
+title: Creating a server
+description: Learn how to create and configure a Maia server to accept client connections
+---
+
+A Maia server handles incoming client connections and manages message routing. This guide shows you how to create and configure a server using the built-in TCP networking layer.
+
+## Basic server setup
+
+<Steps>
+  <Step title="Create a server instance">
+    Create a `Server<TCPNetworkingLayer>` instance to start accepting connections:
+
+    ```csharp
+    using Artimora.Maia;
+
+    var server = new Server<TCPNetworkingLayer>();
+    ```
+
+    The server uses default initialization options with port `8080` and a tick delay of `100ms`.
+  </Step>
+
+  <Step title="Register event handlers">
+    Set up handlers for client connections, disconnections, and messages:
+
+    ```csharp
+    server.OnClientConnect += (clientId) => 
+    {
+        Console.WriteLine($"Client {clientId} connected");
+    };
+
+    server.OnClientDisconnect += (clientId) => 
+    {
+        Console.WriteLine($"Client {clientId} disconnected");
+    };
+
+    server.OnMessage += (data) => 
+    {
+        Console.WriteLine($"Client {data.client} sent: {data.message.id}");
+    };
+    ```
+
+    <Note>
+      Client IDs are automatically assigned starting from `1` and increment for each new connection.
+    </Note>
+  </Step>
+
+  <Step title="Start listening">
+    Call `Listen()` to start the server's main loop:
+
+    ```csharp
+    await server.Listen();
+    ```
+
+    The server will continuously tick and process incoming connections and messages until `Shutdown()` is called.
+  </Step>
+</Steps>
+
+## Configuration options
+
+You can customize server behavior using `ServerInitializationOptions`:
+
+```csharp
+var options = new ServerInitializationOptions
+{
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 10000
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+### Available options
+
+<ParamField path="Port" type="int" default="8080">
+  The TCP port to listen on for incoming connections.
+</ParamField>
+
+<ParamField path="TickDelay" type="int" default="100">
+  Delay in milliseconds between server ticks. Lower values provide faster response times but use more CPU.
+</ParamField>
+
+<ParamField path="FunctionTimeout" type="int" default="8000">
+  Time in milliseconds to wait for remote function call results before timing out.
+</ParamField>
+
+<ParamField path="FunctionHandler" type="IFunctionHandler" default="GenericFunctionHandler">
+  Custom function handler implementation for remote procedure calls.
+</ParamField>
+
+## Managing client connections
+
+### Get connected clients
+
+Retrieve an array of all connected client IDs:
+
+```csharp
+int[] clients = server.GetClients();
+Console.WriteLine($"Connected clients: {string.Join(", ", clients)}");
+```
+
+### Get client identities
+
+Each client has a unique GUID identity that persists across reconnections:
+
+```csharp
+// Get all client identities
+Guid?[] identities = server.GetClientIdentities();
+
+// Get a specific client's identity
+Guid? identity = server.GetClientIdentity(clientId);
+
+// Find client ID by identity
+int clientId = server.GetClientId(clientGuid);
+```
+
+<Tip>
+  Client identities are useful for tracking users across reconnections, as client IDs may change when a client reconnects.
+</Tip>
+
+## Sending messages to clients
+
+### Send to a specific client
+
+Use `SendToClient()` to send a message to a single connected client:
+
+```csharp
+var message = new Message("welcome")
+{
+    ["text"] = "Hello, client!"
+};
+
+server.SendToClient(clientId, message);
+```
+
+### Broadcast to all clients
+
+Use `SendToAllClients()` to broadcast a message to every connected client:
+
+```csharp
+var broadcast = new Message("announcement")
+{
+    ["text"] = "Server maintenance in 5 minutes"
+};
+
+server.SendToAllClients(broadcast);
+```
+
+## Graceful shutdown
+
+To stop the server and disconnect all clients:
+
+```csharp
+server.Shutdown();
+```
+
+This will cause the `Listen()` method to exit and clean up all connections.
+
+<Warning>
+  Always call `Shutdown()` before your application exits to ensure clients are properly notified of the disconnection.
+</Warning>
+
+## Complete example
+
+Here's a complete server implementation:
+
+```csharp
+using Artimora.Maia;
+
+public class GameServer
+{
+    private Server<TCPNetworkingLayer> server;
+
+    public async Task Start()
+    {
+        var options = new ServerInitializationOptions
+        {
+            Port = 7777,
+            TickDelay = 50
+        };
+
+        server = new Server<TCPNetworkingLayer>(options);
+
+        server.OnClientConnect += HandleClientConnect;
+        server.OnClientDisconnect += HandleClientDisconnect;
+        server.OnMessage += HandleMessage;
+
+        Console.WriteLine($"Server started on port {options.Port}");
+        await server.Listen();
+    }
+
+    private void HandleClientConnect(int clientId)
+    {
+        Console.WriteLine($"Client {clientId} connected");
+        
+        var welcome = new Message("welcome")
+        {
+            ["serverId"] = "game-server-1"
+        };
+        
+        server.SendToClient(clientId, welcome);
+    }
+
+    private void HandleClientDisconnect(int clientId)
+    {
+        Console.WriteLine($"Client {clientId} disconnected");
+    }
+
+    private void HandleMessage((int client, Message message) data)
+    {
+        Console.WriteLine($"Received {data.message.id} from client {data.client}");
+        
+        // Echo message back to sender
+        server.SendToClient(data.client, data.message);
+    }
+
+    public void Stop()
+    {
+        server?.Shutdown();
+    }
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" icon="paper-plane" href="/guides/sending-messages">
+    Learn how to create and send messages between server and clients
+  </Card>
+  <Card title="Remote functions" icon="function" href="/guides/remote-functions">
+    Register and call functions remotely for RPC-style communication
+  </Card>
+</CardGroup>

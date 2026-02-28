@@ -1,0 +1,81 @@
+---
+title: Introduction to Maia
+description: A simple and thin message-based networking library for C# with TCP support and RPC-like function calls
+---
+
+# Introduction to Maia
+
+Maia is a lightweight, message-based networking library for C# that makes client-server communication straightforward and efficient. Built on top of TCP with an extensible architecture, Maia provides RPC-like function calls, automatic reconnection, and a clean API.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Message-based communication" icon="message">
+    Send and receive structured messages between clients and servers with a simple dictionary-based API
+  </Card>
+  
+  <Card title="RPC-like function calls" icon="function">
+    Register functions on either side and call them remotely with automatic serialization and error handling
+  </Card>
+  
+  <Card title="Auto-reconnect support" icon="rotate">
+    Built-in automatic reconnection for clients with configurable retry attempts and delays
+  </Card>
+  
+  <Card title="Extensible network layers" icon="layer-group">
+    Abstract network layer design allows you to implement custom transport protocols beyond TCP
+  </Card>
+</CardGroup>
+
+## Why Maia?
+
+Maia focuses on simplicity without sacrificing functionality. Whether you're building a multiplayer game, a distributed system, or any application that needs client-server communication, Maia provides:
+
+- **Minimal boilerplate**: Get a working client-server setup in just a few lines of code
+- **Type-safe messaging**: Structured messages with string-based key-value pairs
+- **Reliable TCP transport**: Production-ready TCP implementation with proper framing
+- **Async/await support**: Modern C# async patterns throughout the API
+
+## Quick example
+
+Here's what a simple Maia setup looks like:
+
+```csharp
+// Server
+var server = new Server<TCPNetworkingLayer>();
+server.OnClientConnect += (id) => Console.WriteLine($"Client {id} connected");
+server.RegisterFunction("ping", (args) => 
+    new Dictionary<string, string> { ["response"] = "pong" });
+await server.Listen();
+
+// Client
+var client = new Client<TCPNetworkingLayer>();
+var result = await client.CallFunction("ping");
+Console.WriteLine(result["response"]); // "pong"
+```
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Maia from NuGet and set up your project
+  </Card>
+  
+  <Card title="Quickstart guide" icon="rocket" href="/quickstart">
+    Build your first client-server application in minutes
+  </Card>
+</CardGroup>
+
+## Architecture
+
+Maia is built around three core concepts:
+
+1. **Messages**: Simple data containers with an ID and string-based key-value pairs
+2. **Network layers**: Pluggable transport implementations (TCP included)
+3. **Function handlers**: RPC-like remote function calls with automatic routing
+
+The library uses generic type parameters to specify which network layer to use, making it easy to swap implementations without changing your application code.
+
+<Tip>
+  Maia uses `TCPNetworkingLayer` by default, which provides reliable, ordered message delivery over TCP.
+</Tip>

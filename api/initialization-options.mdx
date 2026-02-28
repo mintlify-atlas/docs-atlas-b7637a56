@@ -1,0 +1,266 @@
+---
+title: Initialization options
+description: Learn how to configure client and server instances with initialization options.
+---
+
+Maia provides configuration records for customizing client and server behavior. These options control networking parameters, timeouts, and reconnection behavior.
+
+## BaseInitializationOptions
+
+The base record containing options common to both clients and servers.
+
+```csharp
+public record BaseInitializationOptions(HandlerMetaData.Side Side)
+```
+
+### Properties
+
+<ParamField path="Port" type="int" default="8080">
+  The TCP port to use for networking. For servers, this is the listening port. For clients, this is the port to connect to.
+</ParamField>
+
+<ParamField path="TickDelay" type="int" default="100">
+  The delay in milliseconds between network tick operations. Lower values provide faster message processing but higher CPU usage.
+</ParamField>
+
+<ParamField path="FunctionTimeout" type="int" default="8000">
+  Time in milliseconds to wait for a function call result before returning a timeout error.
+</ParamField>
+
+<ParamField path="FunctionHandler" type="IFunctionHandler" default="new GenericFunctionHandler(Side)">
+  The function handler implementation used for registering and dispatching remote function calls. You can provide a custom implementation.
+</ParamField>
+
+## ClientInitializationOptions
+
+Configuration options specific to client instances.
+
+```csharp
+public record ClientInitializationOptions() : BaseInitializationOptions(HandlerMetaData.Side.Client)
+```
+
+### Properties
+
+<ParamField path="Host" type="string" default="127.0.0.1">
+  The hostname or IP address of the server to connect to.
+</ParamField>
+
+<ParamField path="AutoReconnect" type="AutoReconnectOptions" default="{ DelayMs = 2000, MaxAttempts = 10 }">
+  Configuration for automatic reconnection behavior when the connection is lost.
+</ParamField>
+
+### AutoReconnectOptions struct
+
+Controls automatic reconnection behavior for clients.
+
+<ParamField path="DelayMs" type="int" default="2000">
+  Delay in milliseconds between reconnection attempts.
+</ParamField>
+
+<ParamField path="MaxAttempts" type="int" default="10">
+  Maximum number of reconnection attempts. Set to 0 to disable automatic reconnection.
+</ParamField>
+
+```csharp
+public record struct AutoReconnectOptions()
+{
+    public int DelayMs = 2000;
+    public int MaxAttempts = 10;
+}
+```
+
+### Default instance
+
+```csharp
+ClientInitializationOptions.Default
+```
+
+Provides a default configuration instance with all default values.
+
+### Example usage
+
+```csharp
+using Artimora.Maia;
+
+// Use default options
+var client1 = new Client<TCPNetworkingLayer>();
+
+// Customize specific options
+var options = new ClientInitializationOptions
+{
+    Host = "192.168.1.100",
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 5000,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 1000,
+        MaxAttempts = 5
+    }
+};
+
+var client2 = new Client<TCPNetworkingLayer>(options);
+```
+
+## ServerInitializationOptions
+
+Configuration options specific to server instances.
+
+```csharp
+public record ServerInitializationOptions() : BaseInitializationOptions(HandlerMetaData.Side.Server)
+```
+
+Servers inherit all properties from `BaseInitializationOptions` without adding server-specific properties.
+
+### Default instance
+
+```csharp
+ServerInitializationOptions.Default
+```
+
+Provides a default configuration instance with all default values.
+
+### Example usage
+
+```csharp
+using Artimora.Maia;
+
+// Use default options
+var server1 = new Server<TCPNetworkingLayer>();
+
+// Customize specific options
+var options = new ServerInitializationOptions
+{
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 10000
+};
+
+var server2 = new Server<TCPNetworkingLayer>(options);
+```
+
+## Complete examples
+
+### Low-latency client
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    Host = "game.server.com",
+    Port = 7777,
+    TickDelay = 16,  // ~60 ticks per second
+    FunctionTimeout = 3000,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 500,
+        MaxAttempts = 20
+    }
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+```
+
+### High-capacity server
+
+```csharp
+var options = new ServerInitializationOptions
+{
+    Port = 8080,
+    TickDelay = 100,
+    FunctionTimeout = 15000  // Allow longer timeouts for complex operations
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+### Local IPC configuration
+
+```csharp
+// Server
+var serverOptions = new ServerInitializationOptions
+{
+    Port = 7000,
+    TickDelay = 10  // Very fast for local communication
+};
+
+var server = new Server<TCPNetworkingLayer>(serverOptions);
+
+// Client
+var clientOptions = new ClientInitializationOptions
+{
+    Host = "127.0.0.1",
+    Port = 7000,
+    TickDelay = 10,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 100,
+        MaxAttempts = -1  // Infinite retries for IPC
+    }
+};
+
+var client = new Client<TCPNetworkingLayer>(clientOptions);
+```
+
+### Custom function handler
+
+```csharp
+public class CustomFunctionHandler : IFunctionHandler
+{
+    // Implement IFunctionHandler interface
+    // ...
+}
+
+var options = new ServerInitializationOptions
+{
+    Port = 8080,
+    FunctionHandler = new CustomFunctionHandler(HandlerMetaData.Side.Server)
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+## Performance tuning
+
+### TickDelay
+
+<Note>
+  Lower `TickDelay` values provide faster message processing but increase CPU usage. Choose based on your latency requirements:
+  - **Real-time games**: 16-33ms (30-60 ticks/sec)
+  - **Turn-based games**: 100-250ms
+  - **Background sync**: 500-1000ms
+</Note>
+
+### FunctionTimeout
+
+<Note>
+  Set `FunctionTimeout` based on expected function execution time:
+  - **Simple queries**: 1000-3000ms
+  - **Database operations**: 5000-10000ms
+  - **Heavy computation**: 15000-30000ms
+</Note>
+
+### AutoReconnect
+
+<Note>
+  Configure reconnection based on your use case:
+  - **Mobile/unstable networks**: High `MaxAttempts`, moderate `DelayMs`
+  - **Local IPC**: Low `DelayMs`, infinite attempts
+  - **One-shot connections**: `MaxAttempts = 0` (disable)
+</Note>
+
+## Property inheritance
+
+Both `ClientInitializationOptions` and `ServerInitializationOptions` inherit from `BaseInitializationOptions`, so you can use all base properties:
+
+```csharp
+// These are equivalent
+var options1 = new ClientInitializationOptions
+{
+    Port = 8080,        // From BaseInitializationOptions
+    Host = "localhost"  // Client-specific
+};
+
+var options2 = ClientInitializationOptions.Default;
+options2.Port = 8080;
+options2.Host = "localhost";
+```

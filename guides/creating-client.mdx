@@ -1,0 +1,342 @@
+---
+title: Creating a client
+description: Learn how to create and configure a Maia client to connect to a server
+---
+
+A Maia client connects to a server and can send/receive messages. This guide shows you how to create a client with automatic reconnection support.
+
+## Basic client setup
+
+<Steps>
+  <Step title="Create a client instance">
+    Create a `Client<TCPNetworkingLayer>` instance:
+
+    ```csharp
+    using Artimora.Maia;
+
+    var client = new Client<TCPNetworkingLayer>();
+    ```
+
+    The client uses default initialization options connecting to `127.0.0.1:8080`.
+  </Step>
+
+  <Step title="Register event handlers">
+    Set up handlers for connection events and incoming messages:
+
+    ```csharp
+    client.OnConnection += () => 
+    {
+        Console.WriteLine("Connected to server");
+    };
+
+    client.OnDisconnect += () => 
+    {
+        Console.WriteLine("Disconnected from server");
+    };
+
+    client.OnMessage += (message) => 
+    {
+        Console.WriteLine($"Received message: {message.id}");
+    };
+    ```
+
+    <Note>
+      Unlike the server, client message handlers receive only the `Message` object without a client ID.
+    </Note>
+  </Step>
+
+  <Step title="Start the client loop">
+    Call `Listen()` to start processing messages:
+
+    ```csharp
+    await client.Listen();
+    ```
+
+    The client will continuously tick, handle reconnection, and process messages until `Shutdown()` is called.
+  </Step>
+</Steps>
+
+## Configuration options
+
+Customize client behavior using `ClientInitializationOptions`:
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    Host = "game.example.com",
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 5000,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 3000,
+        MaxAttempts = 5
+    }
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+```
+
+### Available options
+
+<ParamField path="Host" type="string" default="127.0.0.1">
+  The server hostname or IP address to connect to.
+</ParamField>
+
+<ParamField path="Port" type="int" default="8080">
+  The TCP port to connect to on the server.
+</ParamField>
+
+<ParamField path="TickDelay" type="int" default="100">
+  Delay in milliseconds between client ticks. Lower values improve responsiveness but use more CPU.
+</ParamField>
+
+<ParamField path="FunctionTimeout" type="int" default="8000">
+  Time in milliseconds to wait for remote function call results before timing out.
+</ParamField>
+
+<ParamField path="AutoReconnect" type="AutoReconnectOptions">
+  Configuration for automatic reconnection behavior.
+</ParamField>
+
+<ParamField path="FunctionHandler" type="IFunctionHandler" default="GenericFunctionHandler">
+  Custom function handler implementation for remote procedure calls.
+</ParamField>
+
+## Automatic reconnection
+
+Maia clients support automatic reconnection when the connection is lost. This is configured through the `AutoReconnect` options.
+
+### Reconnect configuration
+
+```csharp
+var options = ClientInitializationOptions.Default with
+{
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 2000,      // Wait 2 seconds between attempts
+        MaxAttempts = 10     // Try up to 10 times
+    }
+};
+```
+
+<ParamField path="DelayMs" type="int" default="2000">
+  Milliseconds to wait between reconnection attempts.
+</ParamField>
+
+<ParamField path="MaxAttempts" type="int" default="10">
+  Maximum number of reconnection attempts. Set to `0` to disable auto-reconnect.
+</ParamField>
+
+### Handling reconnection events
+
+The `TCPNetworkingLayer` provides internal callbacks for reconnection attempts:
+
+```csharp
+var client = new Client<TCPNetworkingLayer>(options);
+
+// OnDisconnect fires when connection is lost
+client.OnDisconnect += () => 
+{
+    Console.WriteLine("Lost connection, will attempt to reconnect...");
+};
+
+// OnConnection fires again when reconnection succeeds
+client.OnConnection += () => 
+{
+    Console.WriteLine("Reconnected successfully!");
+};
+```
+
+<Tip>
+  When a client reconnects, it receives a new client ID from the server, but its GUID identity remains the same.
+</Tip>
+
+### Disabling auto-reconnect
+
+To disable automatic reconnection, set `MaxAttempts` to `0`:
+
+```csharp
+var options = ClientInitializationOptions.Default with
+{
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        MaxAttempts = 0
+    }
+};
+```
+
+## Sending messages to the server
+
+Use the `Send()` method to send messages to the connected server:
+
+```csharp
+var message = new Message("player_move")
+{
+    ["x"] = "10.5",
+    ["y"] = "20.3"
+};
+
+client.Send(message);
+```
+
+See the [sending messages guide](/guides/sending-messages) for more details on message creation and usage.
+
+## Checking client state
+
+You can check if the client should continue running:
+
+```csharp
+while (client.ShouldRun())
+{
+    // Perform periodic tasks
+    await Task.Delay(1000);
+}
+```
+
+<Note>
+  `ShouldRun()` returns `false` after `Shutdown()` is called or when reconnection fails.
+</Note>
+
+## Graceful shutdown
+
+To disconnect from the server and stop the client:
+
+```csharp
+client.Shutdown();
+```
+
+This will cause the `Listen()` method to exit and close the connection.
+
+## Complete example
+
+Here's a complete client implementation with reconnection handling:
+
+```csharp
+using Artimora.Maia;
+
+public class GameClient
+{
+    private Client<TCPNetworkingLayer> client;
+    private bool isConnected = false;
+
+    public async Task Connect(string serverHost, int serverPort)
+    {
+        var options = new ClientInitializationOptions
+        {
+            Host = serverHost,
+            Port = serverPort,
+            TickDelay = 50,
+            AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+            {
+                DelayMs = 2000,
+                MaxAttempts = 5
+            }
+        };
+
+        client = new Client<TCPNetworkingLayer>(options);
+
+        client.OnConnection += HandleConnection;
+        client.OnDisconnect += HandleDisconnect;
+        client.OnMessage += HandleMessage;
+
+        Console.WriteLine($"Connecting to {serverHost}:{serverPort}...");
+        
+        // Start the client loop in the background
+        _ = Task.Run(client.Listen);
+        
+        // Wait for initial connection
+        while (!isConnected && client.ShouldRun())
+        {
+            await Task.Delay(100);
+        }
+    }
+
+    private void HandleConnection()
+    {
+        isConnected = true;
+        Console.WriteLine("Connected to server!");
+        
+        // Send initial handshake
+        var handshake = new Message("handshake")
+        {
+            ["version"] = "1.0",
+            ["playerName"] = "Player1"
+        };
+        
+        client.Send(handshake);
+    }
+
+    private void HandleDisconnect()
+    {
+        isConnected = false;
+        Console.WriteLine("Disconnected from server");
+    }
+
+    private void HandleMessage(Message message)
+    {
+        switch (message.id)
+        {
+            case "welcome":
+                Console.WriteLine($"Server: {message["text"]}");
+                break;
+            
+            case "game_state":
+                // Handle game state updates
+                break;
+            
+            default:
+                Console.WriteLine($"Unknown message: {message.id}");
+                break;
+        }
+    }
+
+    public void SendPlayerAction(string action, Dictionary<string, string> data)
+    {
+        if (!isConnected)
+        {
+            Console.WriteLine("Cannot send: not connected");
+            return;
+        }
+
+        var message = new Message($"player_{action}");
+        message.SetValues(data);
+        
+        client.Send(message);
+    }
+
+    public void Disconnect()
+    {
+        client?.Shutdown();
+        isConnected = false;
+    }
+}
+```
+
+## Usage example
+
+```csharp
+var gameClient = new GameClient();
+await gameClient.Connect("127.0.0.1", 7777);
+
+// Send a player action
+gameClient.SendPlayerAction("move", new Dictionary<string, string>
+{
+    ["x"] = "100",
+    ["y"] = "200"
+});
+
+// Later...
+gameClient.Disconnect();
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" icon="paper-plane" href="/guides/sending-messages">
+    Learn how to create and send messages
+  </Card>
+  <Card title="Remote functions" icon="function" href="/guides/remote-functions">
+    Call server functions remotely
+  </Card>
+</CardGroup>

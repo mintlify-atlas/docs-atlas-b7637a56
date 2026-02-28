@@ -1,0 +1,347 @@
+---
+title: Client-server architecture
+description: Understand how Client and Server classes manage connections and message routing
+---
+
+## Overview
+
+Maia provides `Client<TLayer>` and `Server<TLayer>` classes that handle network communication. Both classes are generic, allowing you to specify the network layer implementation (like `TCPNetworkingLayer`) that handles the actual transport.
+
+## Client architecture
+
+The client class manages a single connection to a server and provides callbacks for connection lifecycle events.
+
+### Creating a client
+
+```csharp
+using Artimora.Maia;
+
+// Create a client with TCP networking
+var client = new Client<TCPNetworkingLayer>();
+
+// Or with custom initialization options
+var client = new Client<TCPNetworkingLayer>(new ClientInitializationOptions
+{
+    Host = "192.168.1.100",
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 5000,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 2000,
+        MaxAttempts = 10
+    }
+});
+```
+
+<Info>
+If you don't provide initialization options, the client uses defaults: `127.0.0.1:8080` with auto-reconnect enabled (10 attempts with 2-second delays).
+</Info>
+
+### Client lifecycle events
+
+Clients provide three main callback events:
+
+```csharp
+client.OnConnection = () =>
+{
+    Console.WriteLine("Connected to server!");
+};
+
+client.OnDisconnect = () =>
+{
+    Console.WriteLine("Disconnected from server");
+};
+
+client.OnMessage = message =>
+{
+    Console.WriteLine($"Received: {message.id}");
+    
+    if (message.id == "server:welcome")
+    {
+        Console.WriteLine($"Welcome message: {message["text"]}");
+    }
+};
+```
+
+### Sending messages
+
+Send messages to the server using the `Send` method:
+
+```csharp
+var message = new Message("player:action");
+message["action"] = "jump";
+message["timestamp"] = DateTime.UtcNow.ToString();
+
+client.Send(message);
+```
+
+### Running the client
+
+The client requires a message loop to process incoming messages and maintain the connection:
+
+```csharp
+// Start the listen loop (this blocks until shutdown)
+await client.Listen();
+
+// Or run in the background
+_ = Task.Run(async () => await client.Listen());
+```
+
+### Shutting down
+
+Gracefully stop the client:
+
+```csharp
+client.Shutdown();
+
+// The Listen() loop will exit after the next tick
+```
+
+<Note>
+When you call `Shutdown()`, the client's `ShouldRun()` method returns `false`, causing the `Listen()` loop to exit and clean up resources.
+</Note>
+
+### Auto-reconnect
+
+Clients can automatically reconnect if the connection is lost:
+
+```csharp
+var client = new Client<TCPNetworkingLayer>(new ClientInitializationOptions
+{
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 3000,      // Wait 3 seconds between attempts
+        MaxAttempts = 5      // Try up to 5 times
+    }
+});
+
+// Reconnect attempts are logged automatically
+// If all attempts fail, OnDisconnect is called and the client shuts down
+```
+
+## Server architecture
+
+The server class manages multiple client connections and provides callbacks for client lifecycle events.
+
+### Creating a server
+
+```csharp
+using Artimora.Maia;
+
+// Create a server with TCP networking
+var server = new Server<TCPNetworkingLayer>();
+
+// Or with custom initialization options
+var server = new Server<TCPNetworkingLayer>(new ServerInitializationOptions
+{
+    Port = 9000,
+    TickDelay = 50,
+    FunctionTimeout = 5000
+});
+```
+
+### Server lifecycle events
+
+Servers track individual client connections:
+
+```csharp
+server.OnClientConnect = clientId =>
+{
+    Console.WriteLine($"Client {clientId} connected");
+};
+
+server.OnClientDisconnect = clientId =>
+{
+    Console.WriteLine($"Client {clientId} disconnected");
+};
+
+server.OnMessage = data =>
+{
+    int clientId = data.client;
+    Message message = data.message;
+    
+    Console.WriteLine($"Client {clientId} sent: {message.id}");
+    
+    if (message.id == "player:action")
+    {
+        HandlePlayerAction(clientId, message);
+    }
+};
+```
+
+<Warning>
+Client IDs are assigned sequentially starting from 1. A client ID of -1 in some contexts indicates "no specific client" or an error condition.
+</Warning>
+
+### Sending messages
+
+Servers can send messages to specific clients or broadcast to all clients:
+
+```csharp
+// Send to a specific client
+var message = new Message("server:notification");
+message["text"] = "You collected an item!";
+server.SendToClient(5, message);
+
+// Broadcast to all connected clients
+var broadcast = new Message("server:announcement");
+broadcast["text"] = "Server restarting in 5 minutes";
+server.SendToAllClients(broadcast);
+```
+
+### Managing clients
+
+Retrieve information about connected clients:
+
+```csharp
+// Get all connected client IDs
+int[] clients = server.GetClients();
+Console.WriteLine($"{clients.Length} clients connected");
+
+// Iterate over clients
+foreach (int clientId in server.GetClients())
+{
+    var message = new Message("server:ping");
+    server.SendToClient(clientId, message);
+}
+```
+
+### Running the server
+
+Like clients, servers require a message loop:
+
+```csharp
+// Start the listen loop (this blocks until shutdown)
+await server.Listen();
+
+// Or run in the background
+_ = Task.Run(async () => await server.Listen());
+```
+
+### Shutting down
+
+Gracefully stop the server:
+
+```csharp
+server.Shutdown();
+
+// The Listen() loop will exit after the next tick
+// All clients will be disconnected
+```
+
+## Client identity tracking
+
+Maia automatically assigns persistent GUIDs to clients that survive reconnections:
+
+```csharp
+server.OnClientConnect = clientId =>
+{
+    // The identity might not be available immediately
+    // It's populated after the identity handshake
+};
+
+server.OnMessage = data =>
+{
+    if (data.message.id == "artimora:identity")
+    {
+        // Identity has been received
+        Guid? identity = server.GetClientIdentity(data.client);
+        Console.WriteLine($"Client {data.client} has identity {identity}");
+    }
+};
+
+// Get identity for a specific client
+Guid? clientIdentity = server.GetClientIdentity(clientId);
+
+// Find client ID by identity
+int foundClientId = server.GetClientId(someGuid);
+if (foundClientId == -1)
+{
+    Console.WriteLine("Client with that identity is not connected");
+}
+
+// Get all client identities
+Guid?[] identities = server.GetClientIdentities();
+```
+
+<Info>
+Client identities are automatically exchanged during connection through internal `artimora:identity_request` and `artimora:identity` messages. You don't need to implement this yourself.
+</Info>
+
+## Tick delay and performance
+
+Both client and server use a tick-based model with configurable delays:
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    TickDelay = 16  // ~60 updates per second
+};
+```
+
+- **Lower values** (e.g., 16ms): More responsive, higher CPU usage
+- **Higher values** (e.g., 100ms): Less responsive, lower CPU usage
+- **Default**: 100ms
+
+<Note>
+The tick delay is clamped to valid values (0 to int.MaxValue). Setting it to 0 will run the loop as fast as possible, which may consume significant CPU.
+</Note>
+
+## Complete example
+
+Here's a simple chat application:
+
+```csharp
+// Server
+var server = new Server<TCPNetworkingLayer>(new ServerInitializationOptions { Port = 8080 });
+
+server.OnClientConnect = clientId =>
+{
+    var welcome = new Message("chat:welcome");
+    welcome["text"] = "Welcome to the chat!";
+    server.SendToClient(clientId, welcome);
+};
+
+server.OnMessage = data =>
+{
+    if (data.message.id == "chat:message")
+    {
+        // Broadcast to all clients
+        var broadcast = new Message("chat:message");
+        broadcast["sender"] = data.client.ToString();
+        broadcast["text"] = data.message["text"];
+        server.SendToAllClients(broadcast);
+    }
+};
+
+_ = Task.Run(async () => await server.Listen());
+
+// Client
+var client = new Client<TCPNetworkingLayer>(new ClientInitializationOptions
+{
+    Host = "127.0.0.1",
+    Port = 8080
+});
+
+client.OnMessage = message =>
+{
+    if (message.id == "chat:message")
+    {
+        Console.WriteLine($"[{message["sender"]}]: {message["text"]}");
+    }
+};
+
+await client.Listen();
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Network layers" icon="layer-group" href="/concepts/network-layers">
+    Learn about the network layer abstraction and TCP implementation
+  </Card>
+  <Card title="Function calls" icon="function" href="/concepts/function-calls">
+    Implement RPC-style function calls between clients and servers
+  </Card>
+</CardGroup>

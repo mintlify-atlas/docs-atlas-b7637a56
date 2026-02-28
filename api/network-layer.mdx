@@ -1,0 +1,303 @@
+---
+title: Network layer
+description: Learn about the NetworkLayer abstraction and the built-in TCPNetworkingLayer implementation.
+---
+
+Maia uses an abstract `NetworkLayer` class to decouple the networking protocol from the client/server logic. This allows you to implement custom transport layers while maintaining the same high-level API.
+
+## NetworkLayer abstract class
+
+The `NetworkLayer` class defines the contract that all network layer implementations must follow.
+
+### Abstract methods
+
+#### GetState()
+
+Returns the current state of the network layer.
+
+<ResponseField name="returns" type="NetworkLayerState">
+  The current state: `Disconnected`, `Server`, or `Client`.
+</ResponseField>
+
+#### StartServer()
+
+Initializes the layer in server mode.
+
+<ParamField path="options" type="ServerInitializationOptions" required>
+  Server configuration options.
+</ParamField>
+
+#### StartClient()
+
+Initializes the layer in client mode.
+
+<ParamField path="options" type="ClientInitializationOptions" required>
+  Client configuration options.
+</ParamField>
+
+#### Send()
+
+Sends data to the remote endpoint. In server mode, broadcasts to all clients. In client mode, sends to the server.
+
+<ParamField path="data" type="byte[]" required>
+  The raw data to send.
+</ParamField>
+
+#### SendToClient()
+
+Sends data to a specific client. Only valid in server mode.
+
+<ParamField path="clientId" type="int" required>
+  The target client ID.
+</ParamField>
+
+<ParamField path="data" type="byte[]" required>
+  The raw data to send.
+</ParamField>
+
+#### GetClients()
+
+Returns an array of connected client IDs. Only valid in server mode.
+
+<ResponseField name="returns" type="int[]">
+  Array of client IDs.
+</ResponseField>
+
+#### Tick()
+
+Processes pending network operations. Called repeatedly by the client/server listen loop.
+
+#### Stop()
+
+Stops the network layer and releases all resources.
+
+#### SetOnMessage()
+
+Registers a callback for incoming messages.
+
+<ParamField path="handler" type="Action<(int client, byte[] data)>" required>
+  Callback invoked when data is received. The client parameter is the sender's ID in server mode, or -1 in client mode.
+</ParamField>
+
+#### SetOnConnection()
+
+Registers a callback for connection events.
+
+<ParamField path="handler" type="Action<HandlerMetaData>" required>
+  Callback invoked when a connection is established. In server mode, fired for each client connection. In client mode, fired when connected to the server.
+</ParamField>
+
+#### SetOnDisconnect()
+
+Registers a callback for disconnection events.
+
+<ParamField path="handler" type="Action<HandlerMetaData>" required>
+  Callback invoked when a disconnection occurs.
+</ParamField>
+
+#### SetOnReconnectFailure()
+
+Registers a callback for reconnection failures. Only used in client mode.
+
+<ParamField path="handler" type="Action" required>
+  Callback invoked when automatic reconnection fails after all retry attempts.
+</ParamField>
+
+#### SetOnReconnectAttempt()
+
+Registers a callback for reconnection attempts. Only used in client mode.
+
+<ParamField path="handler" type="Action<int>" required>
+  Callback invoked before each reconnection attempt. Receives the attempt number.
+</ParamField>
+
+## NetworkLayerState enum
+
+Represents the current state of the network layer.
+
+```csharp
+public enum NetworkLayerState
+{
+    Disconnected,  // Not connected
+    Server = 1,    // Running as server
+    Client = 2     // Running as client
+}
+```
+
+## HandlerMetaData struct
+
+Contains metadata about a connection or disconnection event.
+
+<ResponseField name="clientId" type="int?">
+  The client ID for server-side events, or `null` for client-side events.
+</ResponseField>
+
+<ResponseField name="side" type="HandlerMetaData.Side">
+  Indicates whether the event occurred on the server or client side.
+</ResponseField>
+
+```csharp
+public readonly record struct HandlerMetaData(
+    int? clientId,
+    HandlerMetaData.Side side
+);
+```
+
+### HandlerMetaData.Side enum
+
+```csharp
+public enum Side
+{
+    Server = 1,
+    Client = 2
+}
+```
+
+## TCPNetworkingLayer class
+
+The built-in TCP/IP implementation of `NetworkLayer`. This is the default and recommended layer for most applications.
+
+### Features
+
+- **TCP/IP transport** - Reliable, ordered delivery over TCP sockets
+- **Frame-based protocol** - Messages are length-prefixed (4-byte big-endian length header)
+- **Automatic reconnection** - Client-side automatic reconnection with configurable retry logic
+- **Thread-safe** - Safe for use from multiple threads
+- **No-delay mode** - Uses `TCP_NODELAY` for low-latency communication
+
+### Usage
+
+```csharp
+using Artimora.Maia;
+
+// Use TCPNetworkingLayer as the type parameter
+var client = new Client<TCPNetworkingLayer>();
+var server = new Server<TCPNetworkingLayer>();
+```
+
+### Connection behavior
+
+#### Server mode
+
+- Listens on the specified port using `IPAddress.Any` (all network interfaces)
+- Accepts incoming TCP connections
+- Assigns each client a unique incrementing ID starting from 1
+- Automatically detects client disconnections via socket polling
+
+#### Client mode
+
+- Connects to the specified host and port
+- Supports automatic reconnection with configurable delays and retry limits
+- Fires reconnection attempt callbacks before each retry
+- Fires reconnection failure callback when max attempts exceeded
+
+### Message framing
+
+The TCP layer uses a simple framing protocol:
+
+1. **Length prefix** - 4 bytes, big-endian unsigned integer
+2. **Payload** - Variable-length message data
+
+Example frame structure:
+
+```
+[00 00 00 0A] [48 65 6C 6C 6F 20 4D 61 69 61 21]
+   ^length=10      ^payload="Hello Maia!"
+```
+
+### Error handling
+
+The TCP layer handles errors gracefully:
+
+- **Write failures** - Automatically disconnect the client
+- **Read failures** - Automatically disconnect the client
+- **Socket errors** - Logged and handled without crashing
+- **Reconnection failures** - Fire the `OnReconnectFailure` callback
+
+### Performance considerations
+
+<Note>
+  The TCP layer uses `NoDelay = true` (disables Nagle's algorithm) for low-latency messaging. This is ideal for real-time applications but may increase bandwidth usage for small messages.
+</Note>
+
+- **Buffer size** - Uses 8KB read buffers per connection
+- **Polling** - Tick-based polling (no blocking)
+- **Lock granularity** - Fine-grained locking for server client dictionary
+
+## Creating a custom network layer
+
+You can implement your own network layer for custom protocols (UDP, WebSockets, etc.):
+
+```csharp
+public class UDPNetworkingLayer : NetworkLayer
+{
+    public override NetworkLayerState GetState()
+    {
+        // Return current state
+    }
+    
+    public override void StartServer(ServerInitializationOptions options)
+    {
+        // Initialize UDP server
+    }
+    
+    public override void StartClient(ClientInitializationOptions options)
+    {
+        // Initialize UDP client
+    }
+    
+    public override void Send(byte[] data)
+    {
+        // Send data via UDP
+    }
+    
+    public override void SendToClient(int clientId, byte[] data)
+    {
+        // Send to specific client
+    }
+    
+    public override int[] GetClients()
+    {
+        // Return connected clients
+    }
+    
+    public override void Tick()
+    {
+        // Process incoming packets
+    }
+    
+    public override void Stop()
+    {
+        // Clean up resources
+    }
+    
+    // Implement remaining abstract methods...
+}
+
+// Use your custom layer
+var client = new Client<UDPNetworkingLayer>();
+var server = new Server<UDPNetworkingLayer>();
+```
+
+<Note>
+  When implementing a custom layer, ensure you handle message framing, reliability, and ordering according to your protocol's capabilities.
+</Note>
+
+## Example: Checking network state
+
+```csharp
+var client = new Client<TCPNetworkingLayer>();
+
+// Access the underlying network layer (not typically needed)
+// The client/server classes handle this internally
+
+client.OnConnection += () =>
+{
+    Console.WriteLine("Connected!");
+};
+
+client.OnDisconnect += () =>
+{
+    Console.WriteLine("Disconnected!");
+};
+```

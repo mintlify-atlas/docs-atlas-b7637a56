@@ -1,0 +1,461 @@
+---
+title: Remote functions
+description: Learn how to register and call functions remotely using Maia's RPC system
+---
+
+Maia provides a built-in RPC (Remote Procedure Call) system that allows you to call functions across the network as if they were local. This is more convenient than manually handling request/response message pairs.
+
+## How remote functions work
+
+Remote functions in Maia use the `IFunctionHandler` interface to route function calls over messages. The default `GenericFunctionHandler` implementation:
+
+1. Serializes function arguments into a `Dictionary<string, string>`
+2. Sends the function call as a message with ID `artimora:function_call`
+3. Waits asynchronously for a response message with ID `artimora:function_results`
+4. Returns the result dictionary with an `artimora:error` status field
+
+<Note>
+  All function arguments and return values must be strings. You'll need to serialize/deserialize complex types yourself.
+</Note>
+
+## Registering server-side functions
+
+Servers can register functions that clients can call remotely.
+
+### Basic function registration
+
+Use `RegisterFunction()` to register a function on the server:
+
+```csharp
+var server = new Server<TCPNetworkingLayer>();
+
+server.RegisterFunction("addition", (args) =>
+{
+    int left = int.Parse(args["left"]);
+    int right = int.Parse(args["right"]);
+    int result = left + right;
+    
+    return new Dictionary<string, string>
+    {
+        ["result"] = result.ToString()
+    };
+});
+```
+
+### Accessing client information
+
+Function handlers receive the full argument dictionary, which includes metadata about the caller:
+
+```csharp
+server.RegisterFunction("get_player_data", (args) =>
+{
+    // The client ID is NOT automatically included in args for server functions
+    // You need to track this separately or use GetClientIdentity
+    
+    return new Dictionary<string, string>
+    {
+        ["name"] = "Player1",
+        ["level"] = "10"
+    };
+});
+```
+
+### Replacing existing functions
+
+By default, registering a function with the same name twice will log an error. Use `forceSet: true` to replace:
+
+```csharp
+server.RegisterFunction("greet", (args) => 
+    new Dictionary<string, string> { ["message"] = "Hello!" });
+
+// This will log an error and not replace the function
+server.RegisterFunction("greet", (args) => 
+    new Dictionary<string, string> { ["message"] = "Hi!" });
+
+// This will replace the function
+server.RegisterFunction("greet", (args) => 
+    new Dictionary<string, string> { ["message"] = "Hi!" }, 
+    forceSet: true);
+```
+
+## Registering client-side functions
+
+Clients can also register functions that the server can call.
+
+```csharp
+var client = new Client<TCPNetworkingLayer>();
+
+client.RegisterFunction("show_notification", (args) =>
+{
+    string title = args["title"];
+    string message = args["message"];
+    
+    Console.WriteLine($"[{title}] {message}");
+    
+    return new Dictionary<string, string>
+    {
+        ["shown"] = "true"
+    };
+});
+```
+
+## Calling functions from the client
+
+Clients can call server-side functions using `CallFunction()`.
+
+### Basic function call
+
+```csharp
+var client = new Client<TCPNetworkingLayer>();
+
+var result = await client.CallFunction("addition", new Dictionary<string, string>
+{
+    ["left"] = "5",
+    ["right"] = "3"
+});
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Result: {result["result"]}");
+}
+else
+{
+    Console.WriteLine($"Error: {result["artimora:error"]}");
+}
+```
+
+### Calling with no arguments
+
+```csharp
+var result = await client.CallFunction("get_server_time");
+
+if (result["artimora:error"] == "none")
+{
+    Console.WriteLine($"Server time: {result["time"]}");
+}
+```
+
+## Calling functions from the server
+
+Servers can call client-side functions using `CallFunction()` with a target client ID.
+
+```csharp
+var server = new Server<TCPNetworkingLayer>();
+
+server.OnClientConnect += async (clientId) =>
+{
+    var result = await server.CallFunction("get_client_version", clientId);
+    
+    if (result["artimora:error"] == "none")
+    {
+        Console.WriteLine($"Client {clientId} version: {result["version"]}");
+    }
+};
+```
+
+### With arguments
+
+```csharp
+var result = await server.CallFunction("show_notification", clientId, new Dictionary<string, string>
+{
+    ["title"] = "Server Message",
+    ["message"] = "Welcome to the server!"
+});
+```
+
+## Error handling
+
+All function calls return a dictionary with an `artimora:error` field that indicates the call status.
+
+### Possible error values
+
+<ParamField path="none" type="string">
+  The function executed successfully.
+</ParamField>
+
+<ParamField path="timeout" type="string">
+  The function call timed out waiting for a response.
+</ParamField>
+
+<ParamField path="not_found" type="string">
+  The requested function is not registered on the remote side.
+</ParamField>
+
+<ParamField path="handler_error" type="string">
+  The function threw an exception during execution.
+</ParamField>
+
+<ParamField path="disconnected" type="string">
+  The client is currently disconnected (client-side only).
+</ParamField>
+
+### Checking for errors
+
+```csharp
+var result = await client.CallFunction("some_function");
+
+switch (result["artimora:error"])
+{
+    case "none":
+        // Success - process the result
+        Console.WriteLine($"Result: {result["value"]}");
+        break;
+    
+    case "timeout":
+        Console.WriteLine("Function call timed out");
+        break;
+    
+    case "not_found":
+        Console.WriteLine("Function not found on server");
+        break;
+    
+    case "handler_error":
+        Console.WriteLine("Function threw an exception");
+        break;
+    
+    default:
+        Console.WriteLine($"Unknown error: {result["artimora:error"]}");
+        break;
+}
+```
+
+## Configuring timeouts
+
+Function calls have a configurable timeout to prevent waiting indefinitely.
+
+### Server timeout
+
+```csharp
+var options = new ServerInitializationOptions
+{
+    FunctionTimeout = 10000 // 10 seconds
+};
+
+var server = new Server<TCPNetworkingLayer>(options);
+```
+
+### Client timeout
+
+```csharp
+var options = new ClientInitializationOptions
+{
+    FunctionTimeout = 5000 // 5 seconds
+};
+
+var client = new Client<TCPNetworkingLayer>(options);
+```
+
+<Warning>
+  If a function takes longer than the timeout period, the caller will receive a `timeout` error, but the function will still complete execution on the remote side.
+</Warning>
+
+## Complete example
+
+Here's a complete example demonstrating remote functions in both directions:
+
+```csharp
+using Artimora.Maia;
+
+// Server implementation
+public class GameServer
+{
+    private Server<TCPNetworkingLayer> server;
+    private Dictionary<int, PlayerData> players = new();
+
+    public async Task Start()
+    {
+        server = new Server<TCPNetworkingLayer>(new ServerInitializationOptions
+        {
+            Port = 7777,
+            FunctionTimeout = 8000
+        });
+
+        // Register server functions
+        server.RegisterFunction("player_login", HandlePlayerLogin);
+        server.RegisterFunction("get_player_stats", HandleGetPlayerStats);
+        
+        server.OnClientConnect += HandleClientConnect;
+        
+        await server.Listen();
+    }
+
+    private Dictionary<string, string> HandlePlayerLogin(Dictionary<string, string> args)
+    {
+        string username = args["username"];
+        string password = args["password"];
+        
+        // Validate credentials (simplified)
+        if (username == "admin" && password == "password")
+        {
+            return new Dictionary<string, string>
+            {
+                ["success"] = "true",
+                ["playerId"] = Guid.NewGuid().ToString(),
+                ["displayName"] = username
+            };
+        }
+        
+        return new Dictionary<string, string>
+        {
+            ["success"] = "false",
+            ["reason"] = "Invalid credentials"
+        };
+    }
+
+    private Dictionary<string, string> HandleGetPlayerStats(Dictionary<string, string> args)
+    {
+        string playerId = args["playerId"];
+        
+        return new Dictionary<string, string>
+        {
+            ["level"] = "10",
+            ["health"] = "100",
+            ["mana"] = "50",
+            ["xp"] = "1250"
+        };
+    }
+
+    private async void HandleClientConnect(int clientId)
+    {
+        // Call client function to get their version
+        var result = await server.CallFunction("get_client_info", clientId);
+        
+        if (result["artimora:error"] == "none")
+        {
+            Console.WriteLine($"Client {clientId}: {result["version"]}, {result["platform"]}");
+        }
+    }
+}
+
+// Client implementation
+public class GameClient
+{
+    private Client<TCPNetworkingLayer> client;
+    private string playerId;
+
+    public async Task Connect()
+    {
+        client = new Client<TCPNetworkingLayer>(new ClientInitializationOptions
+        {
+            Host = "127.0.0.1",
+            Port = 7777,
+            FunctionTimeout = 5000
+        });
+
+        // Register client functions
+        client.RegisterFunction("get_client_info", GetClientInfo);
+        client.RegisterFunction("show_notification", ShowNotification);
+        
+        client.OnConnection += HandleConnection;
+        
+        await Task.Run(client.Listen);
+    }
+
+    private Dictionary<string, string> GetClientInfo(Dictionary<string, string> args)
+    {
+        return new Dictionary<string, string>
+        {
+            ["version"] = "1.2.3",
+            ["platform"] = "Windows",
+            ["language"] = "en-US"
+        };
+    }
+
+    private Dictionary<string, string> ShowNotification(Dictionary<string, string> args)
+    {
+        string title = args["title"];
+        string message = args["message"];
+        
+        Console.WriteLine($"\n=== {title} ===");
+        Console.WriteLine(message);
+        Console.WriteLine("===============\n");
+        
+        return new Dictionary<string, string>
+        {
+            ["acknowledged"] = "true"
+        };
+    }
+
+    private async void HandleConnection()
+    {
+        Console.WriteLine("Connected! Logging in...");
+        
+        var loginResult = await client.CallFunction("player_login", new Dictionary<string, string>
+        {
+            ["username"] = "admin",
+            ["password"] = "password"
+        });
+        
+        if (loginResult["artimora:error"] == "none" && loginResult["success"] == "true")
+        {
+            playerId = loginResult["playerId"];
+            Console.WriteLine($"Logged in as {loginResult["displayName"]}");
+            
+            // Get player stats
+            await LoadPlayerStats();
+        }
+        else
+        {
+            Console.WriteLine($"Login failed: {loginResult["reason"]}");
+        }
+    }
+
+    private async Task LoadPlayerStats()
+    {
+        var statsResult = await client.CallFunction("get_player_stats", new Dictionary<string, string>
+        {
+            ["playerId"] = playerId
+        });
+        
+        if (statsResult["artimora:error"] == "none")
+        {
+            Console.WriteLine($"Level: {statsResult["level"]}");
+            Console.WriteLine($"Health: {statsResult["health"]}");
+            Console.WriteLine($"Mana: {statsResult["mana"]}");
+            Console.WriteLine($"XP: {statsResult["xp"]}");
+        }
+    }
+}
+```
+
+## Custom function handlers
+
+You can implement your own `IFunctionHandler` for custom RPC behavior:
+
+```csharp
+public class CustomFunctionHandler : IFunctionHandler
+{
+    public void SetOptions(BaseInitializationOptions newOptions) { }
+    public void OnMessage(int client, Message message) { }
+    public void RegisterMessageSender(Action<FunctionSenderData> sender) { }
+    
+    public Task<Dictionary<string, string>> CallFunction(string functionName, Dictionary<string, string> args)
+    {
+        // Custom implementation
+        throw new NotImplementedException();
+    }
+    
+    public void RegisterFunction(string functionName, Func<Dictionary<string, string>, Dictionary<string, string>> func, bool forceSet = false)
+    {
+        // Custom implementation
+        throw new NotImplementedException();
+    }
+}
+
+// Use in initialization
+var options = new ServerInitializationOptions
+{
+    FunctionHandler = new CustomFunctionHandler(HandlerMetaData.Side.Server)
+};
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Custom network layers" icon="layer-group" href="/guides/custom-network-layers">
+    Implement custom transport protocols beyond TCP
+  </Card>
+  <Card title="Sending messages" icon="paper-plane" href="/guides/sending-messages">
+    Learn about the underlying message system
+  </Card>
+</CardGroup>

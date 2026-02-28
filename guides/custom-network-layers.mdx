@@ -1,0 +1,577 @@
+---
+title: Custom network layers
+description: Learn how to implement custom network transport layers for different protocols
+---
+
+Maia's architecture separates the messaging logic from the transport layer. While `TCPNetworkingLayer` is provided by default, you can implement custom network layers for different protocols like UDP, WebSockets, or even custom IPC mechanisms.
+
+## NetworkLayer abstract class
+
+All network layers must inherit from the `NetworkLayer` abstract class:
+
+```csharp
+public abstract class NetworkLayer
+{
+    public abstract NetworkLayerState GetState();
+    public abstract void Stop();
+    public abstract void Send(byte[] data);
+    public abstract void Tick();
+
+    public abstract void StartServer(ServerInitializationOptions options);
+    public abstract void StartClient(ClientInitializationOptions options);
+
+    public abstract void SendToClient(int clientId, byte[] data);
+    public abstract int[] GetClients();
+
+    public abstract void SetOnMessage(Action<(int client, byte[] data)> handler);
+    public abstract void SetOnConnection(Action<HandlerMetaData> handler);
+    public abstract void SetOnDisconnect(Action<HandlerMetaData> handler);
+    public abstract void SetOnReconnectFailure(Action handler);
+    public abstract void SetOnReconnectAttempt(Action<int> handler);
+}
+```
+
+## Network layer states
+
+Your implementation must track its current state:
+
+```csharp
+public enum NetworkLayerState
+{
+    Disconnected,
+    Server = HandlerMetaData.Side.Server,
+    Client = HandlerMetaData.Side.Client,
+}
+```
+
+<Note>
+  A network layer can be in server mode, client mode, or disconnected. It cannot be both simultaneously.
+</Note>
+
+## Implementing a custom layer
+
+Here's a step-by-step guide to implementing a custom network layer.
+
+<Steps>
+  <Step title="Create the class structure">
+    Start by creating a class that inherits from `NetworkLayer`:
+
+    ```csharp
+    using Artimora.Maia;
+
+    public class UDPNetworkingLayer : NetworkLayer
+    {
+        private NetworkLayerState currentState = NetworkLayerState.Disconnected;
+        
+        // Event handlers
+        private Action<(int client, byte[] data)>? onMessage;
+        private Action<HandlerMetaData>? onConnection;
+        private Action<HandlerMetaData>? onDisconnect;
+        private Action? onReconnectFailure;
+        private Action<int>? onReconnectAttempt;
+
+        public override NetworkLayerState GetState() => currentState;
+    }
+    ```
+  </Step>
+
+  <Step title="Implement event registration">
+    Store the event handlers that Maia will use to receive notifications:
+
+    ```csharp
+    public override void SetOnMessage(Action<(int client, byte[] data)> handler) 
+        => onMessage = handler;
+    
+    public override void SetOnConnection(Action<HandlerMetaData> handler) 
+        => onConnection = handler;
+    
+    public override void SetOnDisconnect(Action<HandlerMetaData> handler) 
+        => onDisconnect = handler;
+    
+    public override void SetOnReconnectFailure(Action handler) 
+        => onReconnectFailure = handler;
+    
+    public override void SetOnReconnectAttempt(Action<int> handler) 
+        => onReconnectAttempt = handler;
+    ```
+  </Step>
+
+  <Step title="Implement server mode">
+    Handle server initialization and client management:
+
+    ```csharp
+    private UdpClient? serverSocket;
+    private Dictionary<IPEndPoint, int> clientEndpoints = new();
+    private int nextClientId = 1;
+
+    public override void StartServer(ServerInitializationOptions options)
+    {
+        if (currentState != NetworkLayerState.Disconnected)
+            throw new InvalidOperationException("Already active");
+
+        serverSocket = new UdpClient(options.Port);
+        currentState = NetworkLayerState.Server;
+    }
+
+    public override int[] GetClients()
+    {
+        lock (clientEndpoints)
+        {
+            return clientEndpoints.Values.ToArray();
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Implement client mode">
+    Handle client initialization and connection:
+
+    ```csharp
+    private UdpClient? clientSocket;
+    private IPEndPoint? serverEndpoint;
+
+    public override void StartClient(ClientInitializationOptions options)
+    {
+        if (currentState != NetworkLayerState.Disconnected)
+            throw new InvalidOperationException("Already active");
+
+        clientSocket = new UdpClient();
+        serverEndpoint = new IPEndPoint(
+            IPAddress.Parse(options.Host), 
+            options.Port
+        );
+        
+        clientSocket.Connect(serverEndpoint);
+        currentState = NetworkLayerState.Client;
+        
+        onConnection?.Invoke(new HandlerMetaData(null, HandlerMetaData.Side.Client));
+    }
+    ```
+  </Step>
+
+  <Step title="Implement sending">
+    Implement methods to send data to clients or the server:
+
+    ```csharp
+    public override void Send(byte[] data)
+    {
+        switch (currentState)
+        {
+            case NetworkLayerState.Server:
+                // Broadcast to all clients
+                lock (clientEndpoints)
+                {
+                    foreach (var endpoint in clientEndpoints.Keys)
+                    {
+                        serverSocket?.Send(data, data.Length, endpoint);
+                    }
+                }
+                break;
+
+            case NetworkLayerState.Client:
+                clientSocket?.Send(data, data.Length);
+                break;
+
+            default:
+                throw new InvalidOperationException("Not connected");
+        }
+    }
+
+    public override void SendToClient(int clientId, byte[] data)
+    {
+        if (currentState != NetworkLayerState.Server)
+            throw new InvalidOperationException("Server mode only");
+
+        lock (clientEndpoints)
+        {
+            var endpoint = clientEndpoints.FirstOrDefault(x => x.Value == clientId).Key;
+            if (endpoint != null)
+            {
+                serverSocket?.Send(data, data.Length, endpoint);
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(clientId));
+            }
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Implement the tick loop">
+    Process incoming data in the `Tick()` method:
+
+    ```csharp
+    public override void Tick()
+    {
+        switch (currentState)
+        {
+            case NetworkLayerState.Server:
+                TickServer();
+                break;
+            
+            case NetworkLayerState.Client:
+                TickClient();
+                break;
+        }
+    }
+
+    private void TickServer()
+    {
+        if (serverSocket == null || serverSocket.Available == 0)
+            return;
+
+        try
+        {
+            IPEndPoint remoteEndpoint = new IPEndPoint(IPAddress.Any, 0);
+            byte[] data = serverSocket.Receive(ref remoteEndpoint);
+
+            int clientId;
+            lock (clientEndpoints)
+            {
+                if (!clientEndpoints.TryGetValue(remoteEndpoint, out clientId))
+                {
+                    // New client
+                    clientId = nextClientId++;
+                    clientEndpoints[remoteEndpoint] = clientId;
+                    
+                    onConnection?.Invoke(new HandlerMetaData(
+                        clientId, 
+                        HandlerMetaData.Side.Server
+                    ));
+                }
+            }
+
+            onMessage?.Invoke((clientId, data));
+        }
+        catch
+        {
+            // Handle errors
+        }
+    }
+
+    private void TickClient()
+    {
+        if (clientSocket == null || clientSocket.Available == 0)
+            return;
+
+        try
+        {
+            IPEndPoint remoteEndpoint = new IPEndPoint(IPAddress.Any, 0);
+            byte[] data = clientSocket.Receive(ref remoteEndpoint);
+            
+            onMessage?.Invoke((-1, data));
+        }
+        catch
+        {
+            // Handle errors
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Implement cleanup">
+    Handle shutdown and resource cleanup:
+
+    ```csharp
+    public override void Stop()
+    {
+        serverSocket?.Close();
+        clientSocket?.Close();
+        
+        serverSocket = null;
+        clientSocket = null;
+        
+        clientEndpoints.Clear();
+        nextClientId = 1;
+        
+        currentState = NetworkLayerState.Disconnected;
+    }
+    ```
+  </Step>
+</Steps>
+
+## Message framing
+
+The TCP implementation uses length-prefixed framing to handle message boundaries. For connectionless protocols like UDP, you may need different approaches:
+
+### TCP framing (reference)
+
+The `TCPNetworkingLayer` frames messages with a 4-byte big-endian length prefix:
+
+```csharp
+private static byte[] Frame(byte[] payload)
+{
+    var len = payload.Length;
+    var buf = new byte[4 + len];
+    BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(0, 4), (uint)len);
+    Buffer.BlockCopy(payload, 0, buf, 4, len);
+    return buf;
+}
+```
+
+### UDP considerations
+
+For UDP, each datagram is already a discrete unit:
+
+```csharp
+public override void Send(byte[] data)
+{
+    // No framing needed for UDP - each datagram is a complete message
+    // But you may want to add your own header for packet ordering, etc.
+    clientSocket?.Send(data, data.Length);
+}
+```
+
+<Warning>
+  UDP packets can arrive out of order or be dropped. Consider implementing sequence numbers and acknowledgments for reliable delivery.
+</Warning>
+
+## Using your custom layer
+
+Once implemented, use your custom layer like any other:
+
+```csharp
+// Server
+var server = new Server<UDPNetworkingLayer>();
+server.OnClientConnect += (id) => Console.WriteLine($"Client {id} connected");
+await server.Listen();
+
+// Client
+var client = new Client<UDPNetworkingLayer>();
+client.OnConnection += () => Console.WriteLine("Connected");
+await client.Listen();
+```
+
+## Complete example: In-memory layer
+
+Here's a complete custom layer for in-memory communication (useful for testing):
+
+```csharp
+using System.Collections.Concurrent;
+using Artimora.Maia;
+
+public class InMemoryNetworkLayer : NetworkLayer
+{
+    private NetworkLayerState currentState = NetworkLayerState.Disconnected;
+    
+    private Action<(int client, byte[] data)>? onMessage;
+    private Action<HandlerMetaData>? onConnection;
+    private Action<HandlerMetaData>? onDisconnect;
+    private Action? onReconnectFailure;
+    private Action<int>? onReconnectAttempt;
+
+    private static ConcurrentQueue<(InMemoryNetworkLayer sender, byte[] data)> globalQueue = new();
+    private static List<InMemoryNetworkLayer> serverInstances = new();
+    private static List<InMemoryNetworkLayer> clientInstances = new();
+    private static int nextClientId = 1;
+    
+    private int? myClientId;
+    private Dictionary<int, InMemoryNetworkLayer> connectedClients = new();
+
+    public override NetworkLayerState GetState() => currentState;
+
+    public override void SetOnMessage(Action<(int client, byte[] data)> handler) => onMessage = handler;
+    public override void SetOnConnection(Action<HandlerMetaData> handler) => onConnection = handler;
+    public override void SetOnDisconnect(Action<HandlerMetaData> handler) => onDisconnect = handler;
+    public override void SetOnReconnectFailure(Action handler) => onReconnectFailure = handler;
+    public override void SetOnReconnectAttempt(Action<int> handler) => onReconnectAttempt = handler;
+
+    public override void StartServer(ServerInitializationOptions options)
+    {
+        currentState = NetworkLayerState.Server;
+        lock (serverInstances)
+        {
+            serverInstances.Add(this);
+        }
+    }
+
+    public override void StartClient(ClientInitializationOptions options)
+    {
+        currentState = NetworkLayerState.Client;
+        myClientId = Interlocked.Increment(ref nextClientId);
+        
+        lock (clientInstances)
+        {
+            clientInstances.Add(this);
+        }
+        
+        // Notify all servers of connection
+        lock (serverInstances)
+        {
+            foreach (var server in serverInstances)
+            {
+                server.HandleClientConnected(this, myClientId.Value);
+            }
+        }
+        
+        onConnection?.Invoke(new HandlerMetaData(null, HandlerMetaData.Side.Client));
+    }
+
+    public override void Send(byte[] data)
+    {
+        switch (currentState)
+        {
+            case NetworkLayerState.Server:
+                // Broadcast to all clients
+                lock (clientInstances)
+                {
+                    foreach (var client in clientInstances)
+                    {
+                        globalQueue.Enqueue((this, data));
+                    }
+                }
+                break;
+
+            case NetworkLayerState.Client:
+                // Send to all servers
+                lock (serverInstances)
+                {
+                    foreach (var server in serverInstances)
+                    {
+                        globalQueue.Enqueue((this, data));
+                    }
+                }
+                break;
+        }
+    }
+
+    public override void SendToClient(int clientId, byte[] data)
+    {
+        if (currentState != NetworkLayerState.Server)
+            throw new InvalidOperationException("Server mode only");
+
+        if (connectedClients.TryGetValue(clientId, out var client))
+        {
+            globalQueue.Enqueue((this, data));
+        }
+        else
+        {
+            throw new ArgumentOutOfRangeException(nameof(clientId));
+        }
+    }
+
+    public override int[] GetClients()
+    {
+        return connectedClients.Keys.ToArray();
+    }
+
+    public override void Tick()
+    {
+        while (globalQueue.TryDequeue(out var item))
+        {
+            if (item.sender == this)
+                continue; // Don't receive our own messages
+
+            if (currentState == NetworkLayerState.Server)
+            {
+                // Find which client sent this
+                var clientId = connectedClients.FirstOrDefault(x => x.Value == item.sender).Key;
+                if (clientId != 0)
+                {
+                    onMessage?.Invoke((clientId, item.data));
+                }
+            }
+            else if (currentState == NetworkLayerState.Client)
+            {
+                onMessage?.Invoke((-1, item.data));
+            }
+        }
+    }
+
+    public override void Stop()
+    {
+        if (currentState == NetworkLayerState.Server)
+        {
+            lock (serverInstances)
+            {
+                serverInstances.Remove(this);
+            }
+        }
+        else if (currentState == NetworkLayerState.Client)
+        {
+            lock (clientInstances)
+            {
+                clientInstances.Remove(this);
+            }
+        }
+
+        connectedClients.Clear();
+        currentState = NetworkLayerState.Disconnected;
+    }
+
+    private void HandleClientConnected(InMemoryNetworkLayer client, int clientId)
+    {
+        connectedClients[clientId] = client;
+        onConnection?.Invoke(new HandlerMetaData(clientId, HandlerMetaData.Side.Server));
+    }
+}
+```
+
+## Best practices
+
+### Thread safety
+
+Ensure your implementation is thread-safe, especially for client connection tracking:
+
+```csharp
+private readonly object syncLock = new();
+private Dictionary<int, TcpClient> clients = new();
+
+public override int[] GetClients()
+{
+    lock (syncLock)
+    {
+        return clients.Keys.ToArray();
+    }
+}
+```
+
+### Error handling
+
+Handle network errors gracefully and notify Maia of disconnections:
+
+```csharp
+try
+{
+    // Network operation
+}
+catch (SocketException)
+{
+    // Client disconnected
+    onDisconnect?.Invoke(new HandlerMetaData(clientId, HandlerMetaData.Side.Server));
+    CleanupClient(clientId);
+}
+```
+
+### Resource cleanup
+
+Always dispose of network resources properly:
+
+```csharp
+public override void Stop()
+{
+    try
+    {
+        socket?.Shutdown(SocketShutdown.Both);
+        socket?.Close();
+    }
+    catch { /* Already closed */ }
+    finally
+    {
+        socket = null;
+        currentState = NetworkLayerState.Disconnected;
+    }
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Creating a server" icon="server" href="/guides/creating-server">
+    Learn how to use your custom layer with a server
+  </Card>
+  <Card title="Creating a client" icon="laptop" href="/guides/creating-client">
+    Learn how to use your custom layer with a client
+  </Card>
+</CardGroup>

@@ -1,0 +1,367 @@
+---
+title: Network layers
+description: Understand Maia's network layer abstraction and TCP implementation
+---
+
+## Overview
+
+Maia uses an abstraction layer approach to separate networking logic from transport implementation. This allows you to swap transport mechanisms (TCP, UDP, WebSockets, etc.) without changing your application code.
+
+## NetworkLayer abstraction
+
+The `NetworkLayer` abstract class defines the contract that all transport implementations must follow:
+
+```csharp
+public abstract class NetworkLayer
+{
+    // State management
+    public abstract NetworkLayerState GetState();
+    public abstract void Stop();
+    
+    // Message handling
+    public abstract void Send(byte[] data);
+    public abstract void Tick();
+    
+    // Initialization
+    public abstract void StartServer(ServerInitializationOptions options);
+    public abstract void StartClient(ClientInitializationOptions options);
+    
+    // Server-specific operations
+    public abstract void SendToClient(int clientId, byte[] data);
+    public abstract int[] GetClients();
+    
+    // Event handlers
+    public abstract void SetOnMessage(Action<(int client, byte[] data)> handler);
+    public abstract void SetOnConnection(Action<HandlerMetaData> handler);
+    public abstract void SetOnDisconnect(Action<HandlerMetaData> handler);
+    public abstract void SetOnReconnectFailure(Action handler);
+    public abstract void SetOnReconnectAttempt(Action<int> handler);
+}
+```
+
+### Network states
+
+Network layers operate in one of three states:
+
+```csharp
+public enum NetworkLayerState
+{
+    Disconnected,  // Not connected to anything
+    Server,        // Running as a server
+    Client         // Running as a client
+}
+```
+
+<Note>
+A single `NetworkLayer` instance can only be in one state at a time. You cannot run the same instance as both client and server.
+</Note>
+
+## TCPNetworkingLayer
+
+Maia includes a built-in TCP implementation that provides reliable, connection-oriented communication.
+
+### How it works
+
+The TCP layer handles:
+
+- **Connection management**: Accepts client connections and maintains active connection pools
+- **Message framing**: Adds 4-byte length prefixes to messages for proper message boundaries
+- **Auto-reconnect**: Automatically attempts to reconnect clients after connection loss
+- **Thread safety**: Uses locks to safely manage concurrent access to client collections
+
+### Message framing
+
+TCP is a stream-based protocol, so messages must be framed to identify boundaries:
+
+```
+[4 bytes: length][N bytes: payload][4 bytes: length][N bytes: payload]...
+```
+
+Each message is prefixed with a 4-byte big-endian unsigned integer indicating the payload length:
+
+```csharp
+// Framing (internal implementation)
+private static byte[] Frame(byte[] payload)
+{
+    var len = payload.Length;
+    var buf = new byte[4 + len];
+    BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(0, 4), (uint)len);
+    Buffer.BlockCopy(payload, 0, buf, 4, len);
+    return buf;
+}
+```
+
+<Info>
+You don't need to handle framing yourself. The TCP layer automatically frames outgoing messages and extracts frames from incoming data.
+</Info>
+
+### Buffer management
+
+The TCP layer maintains separate receive buffers:
+
+- **Server**: One buffer per connected client (stored in `serverRecv` dictionary)
+- **Client**: A single buffer for incoming data (`clientRecv`)
+
+Buffers accumulate data until complete frames can be extracted:
+
+```csharp
+// Drain complete frames from buffer
+while (buffer.Length - offset >= 4)
+{
+    var msgLen = ReadUInt32BigEndian(buffer, offset);
+    
+    if (buffer.Length - offset - 4 < msgLen)
+        break;  // Wait for more data
+    
+    // Extract complete message
+    var payload = new byte[msgLen];
+    Buffer.BlockCopy(buffer, offset + 4, payload, 0, msgLen);
+    emit(payload);
+    
+    offset += 4 + msgLen;
+}
+```
+
+### Server-side behavior
+
+When operating as a server, the TCP layer:
+
+1. **Listens on the specified port** using `TcpListener`
+2. **Assigns sequential client IDs** starting from 1
+3. **Tracks connections** in thread-safe dictionaries
+4. **Polls for new connections** during each `Tick()`
+
+```csharp
+var server = new Server<TCPNetworkingLayer>(new ServerInitializationOptions
+{
+    Port = 9000
+});
+
+server.OnClientConnect = clientId =>
+{
+    Console.WriteLine($"Client {clientId} connected");
+};
+
+await server.Listen();
+```
+
+### Client-side behavior
+
+When operating as a client, the TCP layer:
+
+1. **Connects to the specified host and port**
+2. **Monitors connection health** during each `Tick()`
+3. **Handles reconnection logic** based on configuration
+4. **Queues messages** sent while disconnected and flushes them on reconnect
+
+```csharp
+var client = new Client<TCPNetworkingLayer>(new ClientInitializationOptions
+{
+    Host = "game.example.com",
+    Port = 9000,
+    AutoReconnect = new ClientInitializationOptions.AutoReconnectOptions
+    {
+        DelayMs = 2000,
+        MaxAttempts = 10
+    }
+});
+
+await client.Listen();
+```
+
+### Reconnection behavior
+
+The TCP layer implements sophisticated reconnection logic:
+
+```csharp
+// When connection is lost:
+1. OnDisconnect event fires
+2. reconnectAttempts counter increments
+3. nextReconnectAtUtc is set based on DelayMs
+4. During Tick(), reconnection is attempted when time is reached
+5. If MaxAttempts is exceeded, OnReconnectFailure fires and client shuts down
+```
+
+<Warning>
+Setting `MaxAttempts` to 0 disables auto-reconnect. The client will shut down immediately after disconnection.
+</Warning>
+
+## Custom network layers
+
+You can implement your own network layers for different transport mechanisms:
+
+```csharp
+using Artimora.Maia;
+
+public class UDPNetworkingLayer : NetworkLayer
+{
+    private NetworkLayerState currentState = NetworkLayerState.Disconnected;
+    
+    public override NetworkLayerState GetState() => currentState;
+    
+    public override void StartServer(ServerInitializationOptions options)
+    {
+        // Initialize UDP server socket
+        currentState = NetworkLayerState.Server;
+    }
+    
+    public override void StartClient(ClientInitializationOptions options)
+    {
+        // Initialize UDP client socket
+        currentState = NetworkLayerState.Client;
+    }
+    
+    public override void Send(byte[] data)
+    {
+        // Send datagram
+    }
+    
+    public override void Tick()
+    {
+        // Poll for incoming datagrams
+        // Call onMessage?.Invoke((clientId, data)) for received data
+    }
+    
+    // ... implement other abstract methods
+}
+
+// Use your custom layer
+var client = new Client<UDPNetworkingLayer>();
+var server = new Server<UDPNetworkingLayer>();
+```
+
+### Implementation requirements
+
+Your custom layer must:
+
+1. **Manage state** correctly (Disconnected/Server/Client)
+2. **Call event handlers** at appropriate times:
+   - `onConnection` when connections are established
+   - `onDisconnect` when connections close
+   - `onMessage` when data is received
+3. **Handle byte arrays** directly (serialization is done by Message class)
+4. **Be tick-based** - all work happens during `Tick()` calls
+5. **Track client IDs** for server-side operations
+
+<Accordion title="Example: WebSocket network layer outline">
+```csharp
+public class WebSocketNetworkLayer : NetworkLayer
+{
+    private WebSocket? clientSocket;
+    private readonly Dictionary<int, WebSocket> serverSockets = [];
+    private NetworkLayerState state = NetworkLayerState.Disconnected;
+    
+    public override void StartClient(ClientInitializationOptions options)
+    {
+        clientSocket = new ClientWebSocket();
+        // Connect to ws://options.Host:options.Port
+        state = NetworkLayerState.Client;
+        onConnection?.Invoke(new HandlerMetaData(null, HandlerMetaData.Side.Client));
+    }
+    
+    public override void Tick()
+    {
+        if (state == NetworkLayerState.Client)
+        {
+            // Check for incoming WebSocket messages
+            // Call onMessage?.Invoke((-1, messageData))
+        }
+        else if (state == NetworkLayerState.Server)
+        {
+            // Accept new WebSocket connections
+            // Check for incoming messages from all clients
+        }
+    }
+    
+    // ... implement remaining methods
+}
+```
+</Accordion>
+
+## Connection metadata
+
+Network layers use `HandlerMetaData` to provide context about connections:
+
+```csharp
+public readonly record struct HandlerMetaData(int? clientId, HandlerMetaData.Side side)
+{
+    public enum Side
+    {
+        Server = 1,
+        Client = 2
+    }
+}
+```
+
+This metadata is passed to connection/disconnection handlers:
+
+```csharp
+// Server-side connection
+onConnection?.Invoke(new HandlerMetaData(clientId: 5, HandlerMetaData.Side.Server));
+
+// Client-side connection
+onConnection?.Invoke(new HandlerMetaData(clientId: null, HandlerMetaData.Side.Client));
+```
+
+## Performance considerations
+
+### TCP layer optimization
+
+The TCP layer includes several optimizations:
+
+- **NoDelay = true**: Disables Nagle's algorithm for lower latency
+- **8KB read buffer**: Reads up to 8192 bytes at a time
+- **Lazy socket polling**: Only reads when `DataAvailable` is true
+- **Connection pooling**: Reuses existing connections rather than recreating
+
+### Tick rate tuning
+
+```csharp
+// High-frequency updates (action games)
+var options = new ServerInitializationOptions { TickDelay = 16 };  // ~60 Hz
+
+// Medium-frequency updates (turn-based games)
+var options = new ServerInitializationOptions { TickDelay = 100 }; // ~10 Hz
+
+// Low-frequency updates (chat, lobby)
+var options = new ServerInitializationOptions { TickDelay = 500 }; // ~2 Hz
+```
+
+<Tip>
+Match your tick rate to your application's requirements. Unnecessary high-frequency ticking wastes CPU cycles.
+</Tip>
+
+## Error handling
+
+The TCP layer handles errors gracefully:
+
+```csharp
+// Connection failures during Send() trigger auto-reconnect (client)
+if (!TryWrite(client, framed))
+{
+    CloseClientSocket(fireDisconnect: true);
+    ScheduleReconnect();
+}
+
+// Server disconnects misbehaving clients automatically
+if (!TryReadAvailable(stream, ref recv))
+{
+    CloseServerClient(targetClient);
+    continue;
+}
+```
+
+<Note>
+Network errors are logged through CopperDevs.Celesium's logging system. Configure your logging to capture these events in production.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Messages" icon="envelope" href="/concepts/messages">
+    Learn about message structure and serialization
+  </Card>
+  <Card title="Function calls" icon="function" href="/concepts/function-calls">
+    Implement RPC-style communication over your network layer
+  </Card>
+</CardGroup>

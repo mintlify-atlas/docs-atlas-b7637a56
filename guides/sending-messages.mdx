@@ -1,0 +1,416 @@
+---
+title: Sending messages
+description: Learn how to create and send messages between clients and servers in Maia
+---
+
+Messages are the core communication mechanism in Maia. They consist of a message ID and a dictionary of key-value pairs, all serialized as JSON over the network.
+
+## Message structure
+
+The `Message` class provides a simple interface for creating structured data packets:
+
+```csharp
+public class Message(string id)
+{
+    public readonly string id = id;
+    
+    public string this[string key] { get; set; }
+    
+    public Dictionary<string, string> GetValues();
+    public void SetValues(Dictionary<string, string> newValues);
+}
+```
+
+<Note>
+  All message values are stored as strings. You need to parse numeric or complex types yourself.
+</Note>
+
+## Creating messages
+
+### Basic message creation
+
+Create a message with an ID and add values using the indexer:
+
+```csharp
+var message = new Message("player_position")
+{
+    ["x"] = "100.5",
+    ["y"] = "250.3",
+    ["z"] = "10.0"
+};
+```
+
+### Setting values in bulk
+
+You can set all values at once using a dictionary:
+
+```csharp
+var message = new Message("player_stats");
+
+message.SetValues(new Dictionary<string, string>
+{
+    ["health"] = "100",
+    ["mana"] = "50",
+    ["level"] = "5"
+});
+```
+
+### Reading message values
+
+Access individual values using the indexer:
+
+```csharp
+client.OnMessage += (message) =>
+{
+    if (message.id == "player_position")
+    {
+        string x = message["x"];
+        string y = message["y"];
+        
+        Console.WriteLine($"Player at ({x}, {y})");
+    }
+};
+```
+
+Or get all values as a dictionary:
+
+```csharp
+Dictionary<string, string> values = message.GetValues();
+
+if (values.TryGetValue("health", out var health))
+{
+    int healthValue = int.Parse(health);
+    Console.WriteLine($"Health: {healthValue}");
+}
+```
+
+## Sending messages from the client
+
+Clients use the `Send()` method to send messages to the server:
+
+```csharp
+var client = new Client<TCPNetworkingLayer>();
+
+// Create and send a message
+var message = new Message("chat")
+{
+    ["text"] = "Hello, server!",
+    ["timestamp"] = DateTime.UtcNow.ToString("o")
+};
+
+client.Send(message);
+```
+
+<Tip>
+  Messages are automatically serialized to JSON and framed with a 4-byte length prefix for transmission.
+</Tip>
+
+## Sending messages from the server
+
+Servers can send messages to specific clients or broadcast to all connected clients.
+
+### Send to a specific client
+
+Use `SendToClient()` with the target client ID:
+
+```csharp
+var server = new Server<TCPNetworkingLayer>();
+
+server.OnClientConnect += (clientId) =>
+{
+    var welcome = new Message("welcome")
+    {
+        ["message"] = "Welcome to the server!",
+        ["clientId"] = clientId.ToString()
+    };
+    
+    server.SendToClient(clientId, welcome);
+};
+```
+
+### Broadcast to all clients
+
+Use `SendToAllClients()` to send a message to every connected client:
+
+```csharp
+var announcement = new Message("server_announcement")
+{
+    ["text"] = "Server will restart in 5 minutes",
+    ["severity"] = "warning"
+};
+
+server.SendToAllClients(announcement);
+```
+
+## Handling incoming messages
+
+### Client-side message handling
+
+Clients receive messages through the `OnMessage` event:
+
+```csharp
+client.OnMessage += (message) =>
+{
+    switch (message.id)
+    {
+        case "welcome":
+            Console.WriteLine($"Server says: {message["message"]}");
+            break;
+        
+        case "game_state":
+            UpdateGameState(message.GetValues());
+            break;
+        
+        case "player_joined":
+            string playerName = message["name"];
+            Console.WriteLine($"{playerName} joined the game");
+            break;
+        
+        default:
+            Console.WriteLine($"Unknown message type: {message.id}");
+            break;
+    }
+};
+```
+
+### Server-side message handling
+
+Servers receive messages with the sender's client ID:
+
+```csharp
+server.OnMessage += (data) =>
+{
+    int clientId = data.client;
+    Message message = data.message;
+    
+    switch (message.id)
+    {
+        case "chat":
+            // Broadcast chat to all other clients
+            var chatMessage = new Message("chat")
+            {
+                ["sender"] = clientId.ToString(),
+                ["text"] = message["text"]
+            };
+            
+            server.SendToAllClients(chatMessage);
+            break;
+        
+        case "player_move":
+            // Validate and broadcast movement
+            if (ValidatePosition(message["x"], message["y"]))
+            {
+                var moveUpdate = new Message("player_moved")
+                {
+                    ["playerId"] = clientId.ToString(),
+                    ["x"] = message["x"],
+                    ["y"] = message["y"]
+                };
+                
+                server.SendToAllClients(moveUpdate);
+            }
+            break;
+    }
+};
+```
+
+## Message serialization
+
+Maia automatically handles message serialization using JSON:
+
+```csharp
+// Internal serialization format (you don't need to do this manually)
+public byte[] Serialize()
+{
+    var data = new { id = id, values = values };
+    return Encoding.UTF8.GetBytes(JsonSerializer.Serialize(data));
+}
+
+// Internal deserialization (handled automatically)
+public static Message Deserialize(byte[] raw)
+{
+    string json = Encoding.UTF8.GetString(raw);
+    var data = JsonSerializer.Deserialize<SerializedMessage>(json);
+    return new Message(data.Id) { values = data.Values };
+}
+```
+
+<Note>
+  You never need to call `Serialize()` or `Deserialize()` manually. The `Send()` methods handle this automatically.
+</Note>
+
+## Best practices
+
+### Use meaningful message IDs
+
+Choose descriptive message IDs that clearly indicate their purpose:
+
+<CodeGroup>
+```csharp Good
+new Message("player_spawn")
+new Message("inventory_update")
+new Message("game_over")
+```
+
+```csharp Bad
+new Message("msg1")
+new Message("data")
+new Message("update")
+```
+</CodeGroup>
+
+### Avoid reserved message IDs
+
+Maia uses message IDs starting with `artimora:` for internal functionality. Don't use this prefix:
+
+<Warning>
+  Reserved message IDs include:
+  - `artimora:identity_request`
+  - `artimora:identity`
+  - `artimora:function_call`
+  - `artimora:function_results`
+</Warning>
+
+### Type conversion
+
+Since all values are strings, create helper methods for common conversions:
+
+```csharp
+public static class MessageExtensions
+{
+    public static int GetInt(this Message msg, string key)
+    {
+        return int.Parse(msg[key]);
+    }
+    
+    public static float GetFloat(this Message msg, string key)
+    {
+        return float.Parse(msg[key]);
+    }
+    
+    public static bool GetBool(this Message msg, string key)
+    {
+        return bool.Parse(msg[key]);
+    }
+}
+
+// Usage
+client.OnMessage += (message) =>
+{
+    int health = message.GetInt("health");
+    float x = message.GetFloat("x");
+    bool isAlive = message.GetBool("alive");
+};
+```
+
+### Batch updates
+
+For frequent updates, consider batching multiple values in a single message:
+
+```csharp
+// Instead of sending 3 separate messages
+var healthMsg = new Message("health_update") { ["value"] = "100" };
+var manaMsg = new Message("mana_update") { ["value"] = "50" };
+var xpMsg = new Message("xp_update") { ["value"] = "1250" };
+
+// Send one combined message
+var statsUpdate = new Message("stats_update")
+{
+    ["health"] = "100",
+    ["mana"] = "50",
+    ["xp"] = "1250"
+};
+```
+
+## Complete example
+
+Here's a complete chat application example:
+
+```csharp
+// Server
+var server = new Server<TCPNetworkingLayer>();
+var playerNames = new Dictionary<int, string>();
+
+server.OnMessage += (data) =>
+{
+    switch (data.message.id)
+    {
+        case "join":
+            playerNames[data.client] = data.message["name"];
+            
+            // Notify all clients
+            var joinMsg = new Message("player_joined")
+            {
+                ["name"] = data.message["name"],
+                ["clientId"] = data.client.ToString()
+            };
+            server.SendToAllClients(joinMsg);
+            break;
+        
+        case "chat":
+            if (playerNames.TryGetValue(data.client, out var name))
+            {
+                var chatMsg = new Message("chat")
+                {
+                    ["sender"] = name,
+                    ["text"] = data.message["text"],
+                    ["timestamp"] = DateTime.UtcNow.ToString("o")
+                };
+                server.SendToAllClients(chatMsg);
+            }
+            break;
+    }
+};
+
+server.OnClientDisconnect += (clientId) =>
+{
+    if (playerNames.TryGetValue(clientId, out var name))
+    {
+        var leaveMsg = new Message("player_left") { ["name"] = name };
+        server.SendToAllClients(leaveMsg);
+        playerNames.Remove(clientId);
+    }
+};
+
+// Client
+var client = new Client<TCPNetworkingLayer>();
+
+client.OnConnection += () =>
+{
+    var joinMsg = new Message("join") { ["name"] = "Alice" };
+    client.Send(joinMsg);
+};
+
+client.OnMessage += (message) =>
+{
+    switch (message.id)
+    {
+        case "player_joined":
+            Console.WriteLine($"{message["name"]} joined the chat");
+            break;
+        
+        case "chat":
+            Console.WriteLine($"[{message["sender"]}]: {message["text"]}");
+            break;
+        
+        case "player_left":
+            Console.WriteLine($"{message["name"]} left the chat");
+            break;
+    }
+};
+
+// Send a chat message
+var chatMsg = new Message("chat") { ["text"] = "Hello everyone!" };
+client.Send(chatMsg);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Remote functions" icon="function" href="/guides/remote-functions">
+    Use RPC-style function calls instead of raw messages
+  </Card>
+  <Card title="Custom network layers" icon="layer-group" href="/guides/custom-network-layers">
+    Implement custom transport protocols
+  </Card>
+</CardGroup>

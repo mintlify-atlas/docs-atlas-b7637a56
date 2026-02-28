@@ -1,0 +1,114 @@
+---
+title: Installation
+description: Install Maia from NuGet and set up your C# project
+---
+
+# Installation
+
+Maia is distributed as a NuGet package and can be installed in any .NET project that supports C# 12 or later.
+
+## Prerequisites
+
+Before installing Maia, ensure you have:
+
+- .NET 8.0 SDK or later
+- A C# project (Console App, Class Library, etc.)
+
+## Install from NuGet
+
+<Steps>
+  <Step title="Install the package">
+    Add Maia to your project using the .NET CLI:
+
+    ```bash
+    dotnet add package Artimora.Maia
+    ```
+
+    Or using the Package Manager Console in Visual Studio:
+
+    ```powershell
+    Install-Package Artimora.Maia
+    ```
+  </Step>
+
+  <Step title="Add using directive">
+    Add the Maia namespace to your C# files:
+
+    ```csharp
+    using Artimora.Maia;
+    ```
+  </Step>
+
+  <Step title="Verify installation">
+    Create a simple test to verify Maia is installed correctly:
+
+    ```csharp
+    using Artimora.Maia;
+
+    var options = ClientInitializationOptions.Default;
+    Console.WriteLine($"Default port: {options.Port}");
+    ```
+
+    If this compiles and runs without errors, Maia is installed successfully.
+  </Step>
+</Steps>
+
+## Project configuration
+
+### Target framework
+
+Ensure your project targets a compatible .NET version. In your `.csproj` file:
+
+```xml
+<PropertyGroup>
+  <TargetFramework>net8.0</TargetFramework>
+  <LangVersion>12.0</LangVersion>
+</PropertyGroup>
+```
+
+### Enable nullable reference types
+
+Maia is designed with nullable reference types in mind. Enable them in your project:
+
+```xml
+<PropertyGroup>
+  <Nullable>enable</Nullable>
+</PropertyGroup>
+```
+
+## Dependencies
+
+Maia has minimal external dependencies:
+
+- **CopperDevs.Celesium**: Used internally for logging and utilities
+- **.NET System libraries**: `System.Net.Sockets`, `System.Text.Json`
+
+All dependencies are automatically resolved when you install the Maia NuGet package.
+
+<Note>
+  Maia uses TCP sockets from `System.Net.Sockets` for the default `TCPNetworkingLayer` implementation.
+</Note>
+
+## Next steps
+
+Now that you have Maia installed, you're ready to build your first client-server application:
+
+<Card title="Quickstart guide" icon="rocket" href="/quickstart">
+  Learn how to create a working client-server application
+</Card>
+
+## Troubleshooting
+
+### Package not found
+
+If you encounter issues finding the package, ensure your NuGet sources are configured correctly:
+
+```bash
+dotnet nuget list source
+```
+
+Make sure `nuget.org` is in your sources list.
+
+### Version compatibility
+
+If you're using an older .NET version, you may need to upgrade your project to .NET 8.0 or later to use Maia.

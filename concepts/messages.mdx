@@ -1,0 +1,251 @@
+---
+title: Messages
+description: Learn how Maia's Message class works for network communication
+---
+
+## Overview
+
+The `Message` class is the fundamental unit of communication in Maia. Every piece of data sent between clients and servers is encapsulated in a message. Messages use a dictionary-based key-value system for flexible data exchange and are automatically serialized to JSON for transmission.
+
+## Message structure
+
+Each message has two core components:
+
+- **id**: A string identifier that defines the message type or purpose
+- **values**: A dictionary of string key-value pairs containing the message data
+
+```csharp
+var message = new Message("player:position");
+message["x"] = "10.5";
+message["y"] = "20.3";
+message["playerId"] = "abc123";
+```
+
+## Creating messages
+
+Messages are constructed with an identifier string that describes their purpose:
+
+```csharp
+// Create a message for a specific event
+var loginMessage = new Message("user:login");
+loginMessage["username"] = "alice";
+loginMessage["sessionId"] = Guid.NewGuid().ToString();
+```
+
+<Note>
+The message ID is readonly after construction and cannot be changed. This ensures message type consistency throughout its lifecycle.
+</Note>
+
+## Working with message data
+
+### Setting values
+
+You can set values using the indexer syntax:
+
+```csharp
+var message = new Message("game:event");
+message["eventType"] = "itemCollected";
+message["itemId"] = "sword_001";
+message["timestamp"] = DateTime.UtcNow.ToString();
+```
+
+### Getting values
+
+Retrieve values the same way you set them:
+
+```csharp
+string eventType = message["eventType"];
+string itemId = message["itemId"];
+```
+
+### Accessing the full dictionary
+
+You can work directly with the underlying dictionary when needed:
+
+```csharp
+// Get all values
+Dictionary<string, string> allValues = message.GetValues();
+
+// Replace all values at once
+var newData = new Dictionary<string, string>
+{
+    ["status"] = "active",
+    ["reason"] = "player joined"
+};
+message.SetValues(newData);
+```
+
+<Warning>
+All values are stored as strings. You must handle type conversion in your application code when working with numbers, booleans, or complex types.
+</Warning>
+
+## Serialization
+
+Maia automatically handles message serialization when you send messages. The serialization process converts messages to JSON-formatted byte arrays for network transmission.
+
+### How serialization works
+
+```csharp
+var message = new Message("chat:message");
+message["sender"] = "alice";
+message["content"] = "Hello world!";
+
+// Serialize to bytes (done automatically when sending)
+byte[] data = message.Serialize();
+
+// Or use the static method
+byte[] data = Message.Serialize(message);
+```
+
+The serialized format looks like this internally:
+
+```json
+{
+  "id": "chat:message",
+  "values": {
+    "sender": "alice",
+    "content": "Hello world!"
+  }
+}
+```
+
+### Deserialization
+
+When receiving messages, Maia deserializes them back into `Message` objects:
+
+```csharp
+byte[] receivedData = /* ... from network ... */;
+Message message = Message.Deserialize(receivedData);
+
+Console.WriteLine(message.id);           // "chat:message"
+Console.WriteLine(message["sender"]);    // "alice"
+Console.WriteLine(message["content"]);   // "Hello world!"
+```
+
+<Note>
+You typically don't need to manually serialize or deserialize messages. The `Client` and `Server` classes handle this automatically through their `OnMessage` handlers.
+</Note>
+
+## Message patterns
+
+### Namespaced identifiers
+
+Using namespaced message IDs helps organize your protocol:
+
+```csharp
+// System messages
+new Message("system:shutdown")
+new Message("system:heartbeat")
+
+// Player messages
+new Message("player:move")
+new Message("player:attack")
+
+// Game messages
+new Message("game:start")
+new Message("game:end")
+```
+
+<Info>
+Maia reserves the `artimora:` namespace for internal messages like function calls and identity management. Avoid using this prefix for your own messages.
+</Info>
+
+### Event-based messaging
+
+Structure messages as events with relevant metadata:
+
+```csharp
+var event = new Message("inventory:itemAdded");
+event["itemType"] = "weapon";
+event["itemId"] = "legendary_sword";
+event["quantity"] = "1";
+event["timestamp"] = DateTime.UtcNow.Ticks.ToString();
+```
+
+### Request-response patterns
+
+While you can implement request-response manually, consider using Maia's [function call system](/concepts/function-calls) for RPC-style communication:
+
+```csharp
+// Manual approach
+var request = new Message("player:getData");
+request["playerId"] = "123";
+request["requestId"] = Guid.NewGuid().ToString();
+client.Send(request);
+
+// Better approach: use function calls instead
+var result = await client.CallFunction("getPlayerData", new Dictionary<string, string>
+{
+    ["playerId"] = "123"
+});
+```
+
+## Best practices
+
+### Use descriptive message IDs
+
+Make message IDs self-documenting:
+
+```csharp
+// Good
+new Message("player:healthChanged")
+new Message("world:objectSpawned")
+
+// Less clear
+new Message("update")
+new Message("event1")
+```
+
+### Handle missing keys gracefully
+
+Always check for key existence when reading message values:
+
+```csharp
+client.OnMessage = message =>
+{
+    if (message.id == "player:update")
+    {
+        var values = message.GetValues();
+        if (values.TryGetValue("playerId", out var playerId))
+        {
+            // Process update
+        }
+        else
+        {
+            Log.Warn("Received player:update without playerId");
+        }
+    }
+};
+```
+
+### Keep messages focused
+
+Each message should represent a single event or command:
+
+```csharp
+// Good - focused messages
+var positionUpdate = new Message("player:moved");
+positionUpdate["x"] = "10";
+positionUpdate["y"] = "20";
+
+var healthUpdate = new Message("player:healthChanged");
+healthUpdate["health"] = "75";
+
+// Less ideal - combining unrelated data
+var playerUpdate = new Message("player:update");
+playerUpdate["x"] = "10";
+playerUpdate["y"] = "20";
+playerUpdate["health"] = "75";
+playerUpdate["inventory"] = "...";
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Client-Server architecture" icon="network-wired" href="/concepts/client-server">
+    Learn how to send and receive messages using Client and Server classes
+  </Card>
+  <Card title="Function calls" icon="function" href="/concepts/function-calls">
+    Use RPC-style function calls for request-response communication
+  </Card>
+</CardGroup>
