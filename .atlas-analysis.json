@@ -1,0 +1,70 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Maia",
+  "projectDescription": "A simple and thin message-based networking library for C# applications",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#60a5fa",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Core Concepts",
+        "pages": [
+          "concepts/messages",
+          "concepts/client-server",
+          "concepts/network-layers",
+          "concepts/function-calls"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/creating-server",
+          "guides/creating-client",
+          "guides/sending-messages",
+          "guides/remote-functions",
+          "guides/custom-network-layers"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api/client",
+          "api/server",
+          "api/message",
+          "api/network-layer",
+          "api/initialization-options",
+          "api/function-handler"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Message-based client-server communication",
+    "TCP networking with custom protocol framing",
+    "RPC-like function calls between client and server",
+    "Auto-reconnect support with configurable retry logic",
+    "Extensible network layer abstraction",
+    "Thread-safe client connection management"
+  ],
+  "publicApiSurface": [
+    "Client<TLayer>",
+    "Server<TLayer>",
+    "Message",
+    "NetworkLayer",
+    "TCPNetworkingLayer",
+    "ClientInitializationOptions",
+    "ServerInitializationOptions",
+    "IFunctionHandler",
+    "GenericFunctionHandler"
+  ]
+}
